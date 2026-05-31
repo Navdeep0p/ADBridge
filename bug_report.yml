@@ -1,0 +1,120 @@
+name: Bug Report
+description: Report a bug in the controller script or the companion agent
+title: "[Bug]: "
+labels: ["bug", "needs-triage"]
+assignees:
+  - Navdeep0p
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for taking the time to report a bug. Please fill in as much detail as possible — incomplete reports take longer to resolve.
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      description: Which part of the project is affected?
+      options:
+        - Controller (adbridge.bat)
+        - Agent (Remote.apk)
+        - Both
+        - Installation / Setup
+    validations:
+      required: true
+
+  - type: dropdown
+    id: module
+    attributes:
+      label: Module (controller bugs only)
+      description: Which module were you using when the bug occurred?
+      options:
+        - N/A (startup / ADB detection)
+        - Stage 1 — Initial Connection (USB)
+        - Stage 2 — Cached Wireless Connection
+        - Module 1 — Keystroke Injection / Remote Control
+        - Module 2 — Screen Mirror (scrcpy)
+        - Module 3 — APK Sideloader
+        - Module 4 — Screenshot Engine
+        - Module 5 — Shizuku Installer
+        - Module 6 — Phone Actions (GPS)
+        - Module 6 — Phone Actions (Maps)
+        - Module 6 — Phone Actions (Call)
+        - Other
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug description
+      description: What went wrong? Be specific.
+      placeholder: "The terminal window closed immediately after selecting option 1 in Module 6..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Exact steps, including menu selections and inputs.
+      value: |
+        1. Run adbridge.bat
+        2. Select [2] Connect via USB
+        3. Enter serial number
+        4. Select Module 6
+        5. Select option [1]
+        6. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+      description: What should have happened?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+      description: What actually happened? Include any error messages printed to the terminal, verbatim.
+    validations:
+      required: true
+
+  - type: input
+    id: windows-version
+    attributes:
+      label: Windows version
+      description: Run `winver` and paste the result (e.g. "Windows 11 22H2 Build 22621")
+    validations:
+      required: true
+
+  - type: input
+    id: adb-version
+    attributes:
+      label: ADB version
+      description: Run `adb version` and paste the first line (e.g. "Android Debug Bridge version 1.0.41")
+    validations:
+      required: true
+
+  - type: input
+    id: android-version
+    attributes:
+      label: Android version and device model
+      description: "e.g. Android 13 / Xiaomi Redmi Note 12"
+    validations:
+      required: true
+
+  - type: input
+    id: scrcpy-version
+    attributes:
+      label: scrcpy version (Module 2 bugs only)
+      description: Run `scrcpy --version` (e.g. "scrcpy 2.7")
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Anything else that might be relevant — network setup, VPN, antivirus, etc.

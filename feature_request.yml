@@ -1,0 +1,68 @@
+name: Feature Request
+description: Suggest a new module, option, or improvement
+title: "[Feature]: "
+labels: ["enhancement"]
+assignees:
+  - Navdeep0p
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Feature requests that clearly describe the problem being solved (not just the solution) are more likely to be accepted and prioritised.
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      description: Where would this feature live?
+      options:
+        - Controller (adbridge.bat) — new module
+        - Controller (adbridge.bat) — new option in existing module
+        - Controller (adbridge.bat) — core / startup behaviour
+        - Agent (Remote.apk)
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: What are you trying to do that you currently cannot? Describe the problem, not the solution.
+      placeholder: "I frequently need to transfer files from the device to my PC, but there is no way to do this without switching to a separate tool..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: How would you like this to work? Be as specific as you can about the user interface and behaviour.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What workarounds do you currently use? Are there other solutions you considered?
+
+  - type: dropdown
+    id: willing-to-implement
+    attributes:
+      label: Implementation
+      description: Are you willing to implement this yourself and submit a pull request?
+      options:
+        - "Yes, I can implement this"
+        - "I could implement this with guidance"
+        - "No, I'm requesting it for someone else to implement"
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Links, screenshots, relevant ADB commands, or any other useful information.
