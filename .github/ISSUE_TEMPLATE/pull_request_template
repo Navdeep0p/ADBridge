@@ -1,1 +1,53 @@
 
+## Summary
+
+<!-- One or two sentences describing what this PR does. -->
+
+## Type of change
+
+- [ ] Bug fix (non-breaking change that resolves an issue)
+- [ ] New feature (non-breaking change that adds functionality)
+- [ ] Breaking change (a fix or feature that would cause existing behaviour to change)
+- [ ] Documentation update
+- [ ] Refactor (no functional change)
+
+## Related issues
+
+<!-- Link any related issues: Closes #N, Fixes #N, Related to #N -->
+
+---
+
+## Changes
+
+<!-- Bullet-point list of what was changed and why. Be specific. -->
+
+-
+-
+
+## Testing
+
+<!-- Describe how you tested this. Include device model, Android version, and which modules/options were exercised. -->
+
+**Device tested on:** (e.g. Xiaomi Redmi Note 12, Android 13)
+**Windows version:** (e.g. Windows 11 22H2)
+**ADB version:** (e.g. 1.0.41)
+**Modules/options tested:**
+
+- [ ] Module 1 — affected by this change
+- [ ] Module 2 — affected by this change
+- [ ] Module 3 — affected by this change
+- [ ] Module 4 — affected by this change
+- [ ] Module 5 — affected by this change
+- [ ] Module 6 — affected by this change
+- [ ] Startup / ADB detection — affected by this change
+
+---
+
+## Checklist
+
+- [ ] My changes follow the code style guidelines in CONTRIBUTING.md
+- [ ] I have updated `CHANGELOG.md` under `[Unreleased]`
+- [ ] I have not introduced any hardcoded paths, credentials, or personal information
+- [ ] All `adb shell` calls that can fail have `>nul 2>&1` or appropriate error guards
+- [ ] I have tested on at least one real Android device (emulators are insufficient for ADB TCP/IP testing)
+- [ ] Any new `goto` labels follow the `SCREAMING_SNAKE_CASE` convention
