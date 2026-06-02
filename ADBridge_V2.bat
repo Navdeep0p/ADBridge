@@ -259,8 +259,14 @@ echo  [*] Switching device to TCP/IP mode (Port 5555)...
 echo  [DEBUG] adb tcpip Result:
 adb -s !USB_SERIAL! tcpip 5555
 
-echo  [*] Waiting 10 seconds for ADB network daemon to fully initialize...
-timeout /t 10 >nul
+echo  [*] Waiting 5 seconds for ADB network daemon to fully initialize...
+timeout /t 5 >nul
+
+echo.
+echo  [!] IMPORTANT: Unplug the USB cable from the device now!
+echo  [i] (HyperOS/MIUI devices block wireless connections while USB is attached)
+echo.
+pause
 
 echo  [DEBUG] Current ADB Devices List:
 adb devices
@@ -268,9 +274,9 @@ adb devices
 echo  [*] Attempting to connect to !DEVICE_IP!:5555...
 set "CONN_SUCCESS=0"
 
-for /l %%A in (1, 1, 5) do (
+for /l %%A in (1, 1, 3) do (
     if "!CONN_SUCCESS!"=="0" (
-        echo  [-] Connection Attempt %%A of 5...
+        echo  [-] Connection Attempt %%A of 3...
         echo  [DEBUG] adb connect Result:
         adb connect !DEVICE_IP!:5555
 
@@ -287,7 +293,7 @@ for /l %%A in (1, 1, 5) do (
 
 if "!CONN_SUCCESS!"=="0" (
     echo.
-    echo  [!] Critical Failure: Could not establish wireless ADB connection after 5 attempts.
+    echo  [!] Critical Failure: Could not establish wireless ADB connection after 3 attempts.
     echo  [!] Ensure the device is on the exact same Wi-Fi network and AP isolation is off.
     echo  [DEBUG] Active Transport Failed. (Error 10060 means port 5555 is unreachable).
     pause
@@ -295,7 +301,6 @@ if "!CONN_SUCCESS!"=="0" (
 )
 
 echo  [+] Successfully connected wirelessly!
-echo  [i] You may now unplug the USB cable.
 set "DEVICE_ID=!DEVICE_IP!:5555"
 
 echo  [DEBUG] Active Transport: !DEVICE_ID!
