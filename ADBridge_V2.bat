@@ -191,22 +191,24 @@ echo.
 echo   [1]  Keystroke Injection ^& Remote Control
 echo   [2]  Wireless Screen Mirror (scrcpy)
 echo   [3]  Sideload / Install APK (Ghost Mode)
-echo   [4]  Automated Screenshot Engine
-echo   [5]  Install Shizuku Framework
-echo   [6]  Phone Actions (GPS / Maps / Call / Record / Photo)
-echo   [7]  Connect Another Device
-echo   [8]  Disconnect and Exit
+echo   [4]  Data Pulling
+echo   [5]  Automated Screenshot Engine
+echo   [6]  Install Shizuku Framework
+echo   [7]  Phone Actions (GPS / Maps / Call / Record / Photo)
+echo   [8]  Connect Another Device
+echo   [9]  Disconnect and Exit
 echo.
-set /p CHOICE="Select module (1-8): "
+set /p CHOICE="Select module (1-9): "
 
 if "%CHOICE%"=="1" goto PROJECT_1
 if "%CHOICE%"=="2" goto PROJECT_2
 if "%CHOICE%"=="3" goto INSTALL_APK
-if "%CHOICE%"=="4" goto SS_ENGINE_STANDALONE
-if "%CHOICE%"=="5" goto INJECT_SHIZUKU
-if "%CHOICE%"=="6" goto MODULE_PHONE_ACTIONS
-if "%CHOICE%"=="7" goto SELECT_DEVICE
-if "%CHOICE%"=="8" goto EXIT_SCRIPT
+if "%CHOICE%"=="4" goto DATA_PULLING
+if "%CHOICE%"=="5" goto SS_ENGINE_STANDALONE
+if "%CHOICE%"=="6" goto INJECT_SHIZUKU
+if "%CHOICE%"=="7" goto MODULE_PHONE_ACTIONS
+if "%CHOICE%"=="8" goto SELECT_DEVICE
+if "%CHOICE%"=="9" goto EXIT_SCRIPT
 
 echo  [!] Invalid selection.
 timeout /t 2 >nul
@@ -386,7 +388,113 @@ pause
 goto MENU_START
 
 :: =========================================================================
-::  MODULE 4: STANDALONE SCREENSHOT ENGINE
+::  MODULE 4: DATA PULLING
+:: =========================================================================
+:DATA_PULLING
+cls
+echo =======================================================
+echo               DATA PULLING ENGINE
+echo               Device: %DEVICE_ID%
+echo =======================================================
+echo.
+echo   [1]  Pull Images
+echo   [2]  Pull Videos
+echo   [3]  Pull Documents
+echo   [4]  Pull Downloads
+echo   [5]  Pull WhatsApp Media
+echo   [6]  Pull Screenshots
+echo   [7]  Pull Everything
+echo   [0]  Back
+echo.
+set /p DP_CHOICE="Select module (0-7): "
+
+if "%DP_CHOICE%"=="1" set "PULL_TARGET=Images" & goto PERFORM_PULL
+if "%DP_CHOICE%"=="2" set "PULL_TARGET=Videos" & goto PERFORM_PULL
+if "%DP_CHOICE%"=="3" set "PULL_TARGET=Documents" & goto PERFORM_PULL
+if "%DP_CHOICE%"=="4" set "PULL_TARGET=Downloads" & goto PERFORM_PULL
+if "%DP_CHOICE%"=="5" set "PULL_TARGET=WhatsApp" & goto PERFORM_PULL
+if "%DP_CHOICE%"=="6" set "PULL_TARGET=Screenshots" & goto PERFORM_PULL
+if "%DP_CHOICE%"=="7" set "PULL_TARGET=Everything" & goto PERFORM_PULL
+if "%DP_CHOICE%"=="0" goto MENU_START
+
+echo  [!] Invalid selection.
+timeout /t 2 >nul
+goto DATA_PULLING
+
+:PERFORM_PULL
+echo.
+echo  [*] Pull started...
+set "SUCCESS_COUNT=0"
+set "SKIPPED_COUNT=0"
+
+:: Create local directories
+if not exist "PulledData" mkdir "PulledData"
+if not exist "PulledData\Images" mkdir "PulledData\Images"
+if not exist "PulledData\Videos" mkdir "PulledData\Videos"
+if not exist "PulledData\Documents" mkdir "PulledData\Documents"
+if not exist "PulledData\Downloads" mkdir "PulledData\Downloads"
+if not exist "PulledData\WhatsApp" mkdir "PulledData\WhatsApp"
+if not exist "PulledData\Screenshots" mkdir "PulledData\Screenshots"
+
+if "%PULL_TARGET%"=="Images" goto PULL_IMAGES
+if "%PULL_TARGET%"=="Videos" goto PULL_VIDEOS
+if "%PULL_TARGET%"=="Documents" goto PULL_DOCUMENTS
+if "%PULL_TARGET%"=="Downloads" goto PULL_DOWNLOADS
+if "%PULL_TARGET%"=="WhatsApp" goto PULL_WHATSAPP
+if "%PULL_TARGET%"=="Screenshots" goto PULL_SCREENSHOTS
+if "%PULL_TARGET%"=="Everything" goto PULL_EVERYTHING
+goto DATA_PULLING
+
+:PULL_IMAGES
+call :DO_PULL "/sdcard/DCIM" "PulledData\Images"
+call :DO_PULL "/sdcard/Pictures" "PulledData\Images"
+goto PULL_DONE
+
+:PULL_VIDEOS
+call :DO_PULL "/sdcard/DCIM/Camera" "PulledData\Videos"
+call :DO_PULL "/sdcard/Movies" "PulledData\Videos"
+goto PULL_DONE
+
+:PULL_DOCUMENTS
+call :DO_PULL "/sdcard/Documents" "PulledData\Documents"
+goto PULL_DONE
+
+:PULL_DOWNLOADS
+call :DO_PULL "/sdcard/Download" "PulledData\Downloads"
+goto PULL_DONE
+
+:PULL_WHATSAPP
+call :DO_PULL "/sdcard/Android/media/com.whatsapp/WhatsApp/Media" "PulledData\WhatsApp"
+goto PULL_DONE
+
+:PULL_SCREENSHOTS
+call :DO_PULL "/sdcard/Pictures/Screenshots" "PulledData\Screenshots"
+goto PULL_DONE
+
+:PULL_EVERYTHING
+call :DO_PULL "/sdcard/DCIM" "PulledData\Images"
+call :DO_PULL "/sdcard/Pictures" "PulledData\Images"
+call :DO_PULL "/sdcard/DCIM/Camera" "PulledData\Videos"
+call :DO_PULL "/sdcard/Movies" "PulledData\Videos"
+call :DO_PULL "/sdcard/Documents" "PulledData\Documents"
+call :DO_PULL "/sdcard/Download" "PulledData\Downloads"
+call :DO_PULL "/sdcard/Android/media/com.whatsapp/WhatsApp/Media" "PulledData\WhatsApp"
+call :DO_PULL "/sdcard/Pictures/Screenshots" "PulledData\Screenshots"
+goto PULL_DONE
+
+:PULL_DONE
+echo.
+echo  [*] Pull completed.
+echo  [*] Folders copied successfully: %SUCCESS_COUNT%
+if !SKIPPED_COUNT! gtr 0 (
+    echo  [*] Folders skipped (not found): %SKIPPED_COUNT%
+)
+echo.
+pause
+goto DATA_PULLING
+
+:: =========================================================================
+::  MODULE 5: STANDALONE SCREENSHOT ENGINE
 :: =========================================================================
 :SS_ENGINE_STANDALONE
 cls
@@ -415,7 +523,7 @@ pause
 goto MENU_START
 
 :: =========================================================================
-::  MODULE 5: SHIZUKU FRAMEWORK INSTALLER
+::  MODULE 6: SHIZUKU FRAMEWORK INSTALLER
 :: =========================================================================
 :INJECT_SHIZUKU
 cls
@@ -568,12 +676,12 @@ timeout /t 2 >nul
 goto SS_LOOP
 
 :: =========================================================================
-::  MODULE 6: PHONE ACTIONS — GPS / MAPS / CALL / RECORD / PHOTO
+::  MODULE 7: PHONE ACTIONS — GPS / MAPS / CALL / RECORD / PHOTO
 :: =========================================================================
 :MODULE_PHONE_ACTIONS
 cls
 echo =======================================================
-echo      MODULE 6: PHONE ACTIONS ^& SENSORS
+echo      MODULE 7: PHONE ACTIONS ^& SENSORS
 echo      Device: %DEVICE_ID%
 echo      by Nani0p ^| github.com/Navdeep0p
 echo =======================================================
@@ -954,6 +1062,24 @@ if "!SCREEN_WAS_OFF!"=="1" (
 )
 pause
 goto MODULE_PHONE_ACTIONS
+
+:: =========================================================================
+::  HELPER: DO_PULL
+:: =========================================================================
+:DO_PULL
+set "REMOTE_PATH=%~1"
+set "LOCAL_PATH=%~2"
+echo  [-] Checking: %REMOTE_PATH%
+adb -s %DEVICE_ID% shell ls "%REMOTE_PATH%" >nul 2>&1
+if errorlevel 1 (
+    echo      [!] Not found. Skipping...
+    set /a SKIPPED_COUNT+=1
+) else (
+    echo      [+] Found. Pulling...
+    adb -s %DEVICE_ID% pull "%REMOTE_PATH%" "%LOCAL_PATH%" >nul 2>&1
+    set /a SUCCESS_COUNT+=1
+)
+goto :EOF
 
 :: =========================================================================
 ::  EXIT
