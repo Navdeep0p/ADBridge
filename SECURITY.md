@@ -2,7 +2,7 @@
 
 ## Scope
 
-This document covers the Wireless ADB Controller (`adbridge.bat`) and the companion Android agent (`Remote.apk`, package `com.navdeepreddy.RemoteAgent`).
+This document covers the Wireless ADB Controller (`adbridge.bat`) and the companion Android agent (`Remote.apk`, package `com.nani0p.RemoteAgent`).
 
 ---
 
