@@ -323,10 +323,13 @@ for /f "tokens=1" %%a in ('adb devices ^| findstr /v "List" ^| findstr "device"'
 )
 :: Compare
 for %%D in (!CURR_DEVICES!) do (
-    echo !PREV_DEVICES! | findstr /c:"%%D" >nul
+    echo %%D | findstr ":" >nul
     if errorlevel 1 (
-        :: New device found!
-        start "Wireless ADB - Connected: %%D" cmd /c ""%~f0" --auto %%D"
+        echo !PREV_DEVICES! | findstr /c:"%%D" >nul
+        if errorlevel 1 (
+            :: New device found!
+            start "Wireless ADB - Connected: %%D" cmd /c ""%~f0" --auto %%D"
+        )
     )
 )
 set "PREV_DEVICES=!CURR_DEVICES!"
