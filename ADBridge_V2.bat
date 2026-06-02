@@ -84,6 +84,12 @@ cd /d "!ADB_PATH!"
 if "%~1"=="--watcher" goto WATCHER_MODE
 if "%~1"=="--auto" (
     set "DEVICE_ID=%~2"
+    echo !DEVICE_ID! | findstr ":" >nul
+    if errorlevel 1 (
+        set "USB_SERIAL=!DEVICE_ID!"
+        goto CONVERT_USB_TO_WIRELESS
+    )
+    call :UPDATE_CACHE "!DEVICE_ID!"
     goto MENU_START
 )
 
@@ -99,23 +105,155 @@ echo      LOCAL WI-FI ADB CONTROLLER  ^|  by Nani0p
 echo      github.com/Navdeep0p
 echo =======================================================
 echo.
-echo  [*] Waiting for any device to be connected...
-adb wait-for-device
+if not exist "cache" mkdir cache
+if not exist "cache\devices.txt" type nul > "cache\devices.txt"
 
-:: Extract the first attached device
-set "DEVICE_ID="
+echo  [*] Checking for previously cached devices...
+for /f "tokens=1,2,3 delims=|" %%A in (cache\devices.txt) do (
+    echo  [-] Attempting auto-reconnect to %%C...
+    adb connect %%C >nul 2>&1
+)
+
+:: Count currently connected devices
+set "NUM_DEVICES=0"
+set "ONLY_DEV="
 for /f "tokens=1" %%a in ('adb devices ^| findstr /v "List" ^| findstr "device"') do (
-    if "!DEVICE_ID!"=="" set "DEVICE_ID=%%a"
+    set /a NUM_DEVICES+=1
+    set "ONLY_DEV=%%a"
 )
 
-if "!DEVICE_ID!"=="" (
-    echo  [!] Failed to detect device. Retrying...
+if "!NUM_DEVICES!"=="0" goto NO_DEVICES_MENU
+
+if "!NUM_DEVICES!"=="1" (
+    echo !ONLY_DEV! | findstr ":" >nul
+    if not errorlevel 1 (
+        :: Friendly name lookup
+        set "FRIENDLY_NAME="
+        for /f "tokens=*" %%x in ('adb -s !ONLY_DEV! shell getprop ro.product.model 2^>nul') do set "FRIENDLY_NAME=%%x"
+        if "!FRIENDLY_NAME!"=="" set "FRIENDLY_NAME=Device"
+        echo  [+] Auto-connected to cached device:
+        echo      !FRIENDLY_NAME! ^(!ONLY_DEV!^)
+        set "DEVICE_ID=!ONLY_DEV!"
+        call :UPDATE_CACHE "!DEVICE_ID!"
+        timeout /t 2 >nul
+        goto MENU_START
+    ) else (
+        set "USB_SERIAL=!ONLY_DEV!"
+        goto CONVERT_USB_TO_WIRELESS
+    )
+)
+
+:: If multiple connected
+goto SELECT_DEVICE
+
+:: -------------------------------------------------------------------------
+::  NO DEVICES MENU (CACHE FALLBACK)
+:: -------------------------------------------------------------------------
+:NO_DEVICES_MENU
+cls
+echo =======================================================
+echo               DEVICE SELECTION MENU
+echo =======================================================
+echo.
+echo  [!] No connected devices found.
+echo.
+echo   KNOWN CACHED DEVICES:
+set "IDX=0"
+if exist "cache\devices.txt" (
+    for /f "tokens=1,2,3 delims=|" %%a in (cache\devices.txt) do (
+        set /a IDX+=1
+        set "CACHE_EP_!IDX!=%%c"
+        echo   [!IDX!] %%b (%%a) - %%c
+    )
+)
+if "!IDX!"=="0" echo   (No devices in cache)
+
+echo.
+echo   [r] Refresh Connected Devices
+echo   [n] Connect New Device (USB)
+echo   [0] Exit
+echo.
+set /p SEL_CHOICE="Select option: "
+if /i "!SEL_CHOICE!"=="r" goto INITIALIZE
+if /i "!SEL_CHOICE!"=="n" goto CONNECT_NEW_DEVICE
+if /i "!SEL_CHOICE!"=="0" goto EXIT_SCRIPT
+
+set "TARGET_EP=!CACHE_EP_%SEL_CHOICE%!"
+if not "!TARGET_EP!"=="" (
+    echo  [*] Attempting to connect to !TARGET_EP!...
+    adb connect !TARGET_EP! >nul 2>&1
     timeout /t 2 >nul
-    goto INITIALIZE
+    adb devices | findstr "!TARGET_EP!" | findstr "device" >nul
+    if errorlevel 1 (
+        echo  [!] Device not currently connected.
+        pause
+        goto NO_DEVICES_MENU
+    ) else (
+        set "DEVICE_ID=!TARGET_EP!"
+        call :UPDATE_CACHE "!DEVICE_ID!"
+        goto MENU_START
+    )
 )
 
-echo  [+] Auto-selected device: !DEVICE_ID!
+echo  [!] Invalid selection.
 timeout /t 2 >nul
+goto NO_DEVICES_MENU
+
+:: -------------------------------------------------------------------------
+::  WAIT FOR NEW USB DEVICE
+:: -------------------------------------------------------------------------
+:CONNECT_NEW_DEVICE
+cls
+echo  [*] Waiting for a new device to be connected via USB...
+adb wait-for-device
+goto INITIALIZE
+
+:: -------------------------------------------------------------------------
+::  CONVERT USB TO WIRELESS
+:: -------------------------------------------------------------------------
+:CONVERT_USB_TO_WIRELESS
+echo.
+echo  [+] USB device detected: !USB_SERIAL!
+echo  [*] Retrieving IP address...
+set "DEVICE_IP="
+for /f "tokens=*" %%a in ('adb -s !USB_SERIAL! shell "ip route | grep wlan0 | grep src" 2^>nul') do (
+    for %%b in (%%a) do set "DEVICE_IP=%%b"
+)
+if "!DEVICE_IP!"=="" (
+    echo  [!] Could not retrieve Wi-Fi IP. Ensure device is connected to Wi-Fi.
+    pause
+    goto NO_DEVICES_MENU
+)
+
+echo  [*] Switching device to TCP/IP mode (Port 5555)...
+adb -s !USB_SERIAL! tcpip 5555 >nul 2>&1
+echo  [*] Waiting for ADB daemon to restart...
+timeout /t 3 >nul
+
+echo  [*] Connecting to !DEVICE_IP!:5555...
+adb connect !DEVICE_IP!:5555 >nul 2>&1
+timeout /t 2 >nul
+
+:: Verify connection exists
+adb devices | findstr "!DEVICE_IP!:5555" | findstr "device" >nul
+if errorlevel 1 (
+    echo  [!] Failed to connect wirelessly.
+    pause
+    goto NO_DEVICES_MENU
+)
+
+echo  [+] Successfully connected wirelessly!
+echo  [i] You may now unplug the USB cable.
+set "DEVICE_ID=!DEVICE_IP!:5555"
+
+:: Grab Friendly Name and update cache before proceeding
+set "FRIENDLY_NAME="
+for /f "tokens=*" %%x in ('adb -s !DEVICE_ID! shell getprop ro.product.model 2^>nul') do set "FRIENDLY_NAME=%%x"
+if "!FRIENDLY_NAME!"=="" set "FRIENDLY_NAME=Device"
+echo  [INFO] Auto-connected: !FRIENDLY_NAME! (!USB_SERIAL!)
+
+call :UPDATE_CACHE "!DEVICE_ID!" "!USB_SERIAL!"
+timeout /t 4 >nul
 goto MENU_START
 
 :: -------------------------------------------------------------------------
@@ -149,32 +287,73 @@ echo =======================================================
 echo            SELECT CONNECTED DEVICE
 echo =======================================================
 echo.
-set idx=0
+echo   CONNECTED DEVICES:
+set "idx=0"
 for /f "tokens=1" %%a in ('adb devices ^| findstr /v "List" ^| findstr "device"') do (
     set /a idx+=1
     set "DEV_!idx!=%%a"
     echo   [!idx!] %%a
 )
 
-if !idx!==0 (
-    echo  [!] No devices connected.
-    pause
-    goto INITIALIZE
+echo.
+echo   KNOWN CACHED DEVICES (Not currently connected):
+set "c_idx=!idx!"
+if exist "cache\devices.txt" (
+    for /f "tokens=1,2,3 delims=|" %%a in (cache\devices.txt) do (
+        :: Ensure it's not already listed
+        set "ALREADY_LISTED=0"
+        for /l %%i in (1,1,!idx!) do (
+            if "!DEV_%%i!"=="%%c" set "ALREADY_LISTED=1"
+        )
+        if "!ALREADY_LISTED!"=="0" (
+            set /a c_idx+=1
+            set "DEV_!c_idx!=%%c"
+            set "DEV_NEEDS_CONNECT_!c_idx!=1"
+            echo   [!c_idx!] %%b (%%a) - %%c
+        )
+    )
 )
 
 echo.
+echo   [r] Refresh
+echo   [n] Connect New Device (USB)
 echo   [b] Back to Main Menu
+echo   [0] Exit
 echo.
-set /p SEL_CHOICE="Select device number: "
+set /p SEL_CHOICE="Select option: "
 if /i "!SEL_CHOICE!"=="b" goto MENU_START
+if /i "!SEL_CHOICE!"=="r" goto INITIALIZE
+if /i "!SEL_CHOICE!"=="n" goto CONNECT_NEW_DEVICE
+if /i "!SEL_CHOICE!"=="0" goto EXIT_SCRIPT
 
-set "DEVICE_ID=!DEV_%SEL_CHOICE%!"
-if "!DEVICE_ID!"=="" (
+set "TARGET_DEV=!DEV_%SEL_CHOICE%!"
+if "!TARGET_DEV!"=="" (
     echo  [!] Invalid selection.
     timeout /t 2 >nul
     goto SELECT_DEVICE
 )
 
+if "!DEV_NEEDS_CONNECT_%SEL_CHOICE%!"=="1" (
+    echo  [*] Attempting to connect to !TARGET_DEV!...
+    adb connect !TARGET_DEV! >nul 2>&1
+    timeout /t 2 >nul
+    adb devices | findstr "!TARGET_DEV!" | findstr "device" >nul
+    if errorlevel 1 (
+        echo  [!] Device not currently connected.
+        pause
+        goto SELECT_DEVICE
+    )
+)
+
+:: Check if it's USB
+echo !TARGET_DEV! | findstr ":" >nul
+if errorlevel 1 (
+    set "USB_SERIAL=!TARGET_DEV!"
+    goto CONVERT_USB_TO_WIRELESS
+)
+
+set "DEVICE_ID=!TARGET_DEV!"
+call :UPDATE_CACHE "!DEVICE_ID!"
 echo  [+] Switched to device: !DEVICE_ID!
 timeout /t 2 >nul
 goto MENU_START
@@ -1095,6 +1274,28 @@ if errorlevel 1 (
     adb -s %DEVICE_ID% pull "%REMOTE_PATH%" "%LOCAL_PATH%" >nul 2>&1
     set /a SUCCESS_COUNT+=1
 )
+exit /b
+
+:: =========================================================================
+::  HELPER: UPDATE_CACHE
+:: =========================================================================
+:UPDATE_CACHE
+set "CACHE_IP=%~1"
+set "CACHE_USB=%~2"
+if "!CACHE_USB!"=="" set "CACHE_USB=!CACHE_IP!"
+
+:: Avoid duplicate entries
+findstr /i "!CACHE_USB!" "cache\devices.txt" >nul
+if not errorlevel 1 goto :EOF
+
+set "FRIENDLY_NAME="
+for /f "tokens=*" %%x in ('adb -s !CACHE_IP! shell getprop ro.product.model 2^>nul') do set "FRIENDLY_NAME=%%x"
+if "!FRIENDLY_NAME!"=="" set "FRIENDLY_NAME=Device"
+
+for /f "tokens=*" %%x in ('date /t') do set "CUR_DATE=%%x"
+for /f "tokens=*" %%x in ('time /t') do set "CUR_TIME=%%x"
+
+echo !CACHE_USB!^|!FRIENDLY_NAME!^|!CACHE_IP!^|!CUR_DATE! !CUR_TIME!>> "cache\devices.txt"
 exit /b
 
 :: =========================================================================
