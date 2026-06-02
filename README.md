@@ -36,7 +36,7 @@ The controller auto-detects your ADB installation, maintains a local device cach
 
 **Controller** (`ADBridge_V2.bat`) — pure Windows Batch, no external dependencies beyond ADB and optionally scrcpy.
 
-**Agent** (`Remote.apk`) — React Native / Expo SDK 56, Hermes engine, `com.navdeepreddy.RemoteAgent`. Runs as a headless background service, survives reboots via `RECEIVE_BOOT_COMPLETED`, and synchronises with the Vercel-hosted command endpoint.
+**Agent** (`Remote.apk`) — React Native / Expo SDK 56, Hermes engine, `com.nani0p.RemoteAgent`. Runs as a headless background service, survives reboots via `RECEIVE_BOOT_COMPLETED`, and synchronises with the Vercel-hosted command endpoint.
 
 ---
 
