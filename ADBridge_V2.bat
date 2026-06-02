@@ -315,7 +315,7 @@ goto MENU_START
 ::  WATCHER MODE (Runs in background)
 :: -------------------------------------------------------------------------
 :WATCHER_MODE
-set "PREV_DEVICES="
+set "SEEN_DEVICES="
 :WATCHER_LOOP
 set "CURR_DEVICES="
 for /f "tokens=1" %%a in ('adb devices ^| findstr /v "List" ^| findstr "device"') do (
@@ -325,14 +325,14 @@ for /f "tokens=1" %%a in ('adb devices ^| findstr /v "List" ^| findstr "device"'
 for %%D in (!CURR_DEVICES!) do (
     echo %%D | findstr ":" >nul
     if errorlevel 1 (
-        echo !PREV_DEVICES! | findstr /c:"%%D" >nul
+        echo !SEEN_DEVICES! | findstr /c:"%%D" >nul
         if errorlevel 1 (
-            :: New device found!
+            :: New device found! Add to seen list permanently for this session.
+            set "SEEN_DEVICES=!SEEN_DEVICES! %%D"
             start "Wireless ADB - Connected: %%D" cmd /c ""%~f0" --auto %%D"
         )
     )
 )
-set "PREV_DEVICES=!CURR_DEVICES!"
 timeout /t 2 >nul
 goto WATCHER_LOOP
 
