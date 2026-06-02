@@ -130,7 +130,7 @@ for %%D in (!CURR_DEVICES!) do (
     echo !PREV_DEVICES! | findstr /c:"%%D" >nul
     if errorlevel 1 (
         :: New device found!
-        start "" cmd /c "%~f0" --auto %%D
+        start "Wireless ADB - Connected: %%D" cmd /c ""%~f0" --auto %%D"
     )
 )
 set "PREV_DEVICES=!CURR_DEVICES!"
