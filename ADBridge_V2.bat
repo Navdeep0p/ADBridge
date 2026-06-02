@@ -259,29 +259,37 @@ echo  [*] Switching device to TCP/IP mode (Port 5555)...
 echo  [DEBUG] adb tcpip Result:
 adb -s !USB_SERIAL! tcpip 5555
 
-echo  [*] Waiting for ADB daemon to re-stabilize...
-set WAIT_COUNT=0
-:WAIT_LOOP
-timeout /t 1 >nul
-set /a WAIT_COUNT+=1
-if !WAIT_COUNT! GEQ 15 (
-    echo  [!] Timeout reached waiting for adbd restart. Continuing...
-    goto WAIT_DONE
+echo  [*] Waiting 10 seconds for ADB network daemon to fully initialize...
+timeout /t 10 >nul
+
+echo  [DEBUG] Current ADB Devices List:
+adb devices
+
+echo  [*] Attempting to connect to !DEVICE_IP!:5555...
+set "CONN_SUCCESS=0"
+
+for /l %%A in (1, 1, 5) do (
+    if "!CONN_SUCCESS!"=="0" (
+        echo  [-] Connection Attempt %%A of 5...
+        echo  [DEBUG] adb connect Result:
+        adb connect !DEVICE_IP!:5555
+
+        timeout /t 2 >nul
+        adb devices | findstr "!DEVICE_IP!:5555" | findstr "device" >nul
+        if not errorlevel 1 (
+            set "CONN_SUCCESS=1"
+        ) else (
+            echo  [!] Attempt %%A failed. Waiting 3 seconds before retry...
+            timeout /t 3 >nul
+        )
+    )
 )
-adb -s !USB_SERIAL! shell "echo checking" >nul 2>&1
-if errorlevel 1 goto WAIT_LOOP
-:WAIT_DONE
 
-echo  [*] Connecting to !DEVICE_IP!:5555...
-echo  [DEBUG] adb connect Result:
-adb connect !DEVICE_IP!:5555
-timeout /t 2 >nul
-
-:: Verify connection exists
-adb devices | findstr "!DEVICE_IP!:5555" | findstr "device" >nul
-if errorlevel 1 (
-    echo  [!] Failed to connect wirelessly.
-    echo  [DEBUG] Active Transport Failed
+if "!CONN_SUCCESS!"=="0" (
+    echo.
+    echo  [!] Critical Failure: Could not establish wireless ADB connection after 5 attempts.
+    echo  [!] Ensure the device is on the exact same Wi-Fi network and AP isolation is off.
+    echo  [DEBUG] Active Transport Failed. (Error 10060 means port 5555 is unreachable).
     pause
     goto NO_DEVICES_MENU
 )
