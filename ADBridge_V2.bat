@@ -20,7 +20,7 @@ setlocal enabledelayedexpansion
 set "ADB_PATH="
 
 :: Set DEBUG_MODE=1 to print diagnostic messages, 0 to hide them.
-set "DEBUG_MODE=0"
+set "DEBUG_MODE=1"
 
 :: =========================================================================
 ::   DO NOT EDIT BELOW THIS LINE
@@ -181,7 +181,8 @@ if /i "!SEL_CHOICE!"=="0" goto EXIT_SCRIPT
 set "TARGET_EP=!CACHE_EP_%SEL_CHOICE%!"
 if not "!TARGET_EP!"=="" (
     echo  [*] Attempting to connect to !TARGET_EP!...
-    adb connect !TARGET_EP! >nul 2>&1
+    echo  [DEBUG] adb connect Output:
+    adb connect !TARGET_EP!
     timeout /t 2 >nul
     adb devices | findstr "!TARGET_EP!" | findstr "device" >nul
     if errorlevel 1 (
@@ -214,30 +215,73 @@ goto INITIALIZE
 :CONVERT_USB_TO_WIRELESS
 echo.
 echo  [+] USB device detected: !USB_SERIAL!
+echo  [DEBUG] Device Serial: !USB_SERIAL!
+
+:: Retrieve Friendly Name using USB serial BEFORE switching to tcpip (since the serial becomes invalid after tcpip restarts adbd)
+set "FRIENDLY_NAME="
+for /f "tokens=*" %%x in ('adb -s !USB_SERIAL! shell getprop ro.product.model 2^>nul') do set "FRIENDLY_NAME=%%x"
+if "!FRIENDLY_NAME!"=="" set "FRIENDLY_NAME=Device"
+echo  [DEBUG] Device Model: !FRIENDLY_NAME!
+
 echo  [*] Retrieving IP address...
+set "RAW_IP="
+set "CLEAN_IP="
 set "DEVICE_IP="
-for /f "tokens=*" %%a in ('adb -s !USB_SERIAL! shell "ip route | grep wlan0 | grep src" 2^>nul') do (
-    for %%b in (%%a) do set "DEVICE_IP=%%b"
+
+:: Method 1: DHCP properties (most Android versions)
+for /f "tokens=*" %%a in ('adb -s !USB_SERIAL! shell "getprop dhcp.wlan0.ipaddress" 2^>nul') do set "RAW_IP=%%a"
+
+:: Method 2: Live interface state (Android 10+ fallback)
+if "!RAW_IP!"=="" (
+    for /f "tokens=2" %%a in ('adb -s !USB_SERIAL! shell "ip -4 addr show wlan0" ^| findstr "inet " 2^>nul') do set "RAW_IP=%%a"
 )
+
+:: Strip subnet mask
+for /f "tokens=1 delims=/" %%a in ("!RAW_IP!") do set "CLEAN_IP=%%a"
+:: Strip carriage return
+for /f "tokens=1" %%a in ("!CLEAN_IP!") do set "DEVICE_IP=%%a"
+
+echo  [DEBUG] Device IP: !DEVICE_IP!
+
 if "!DEVICE_IP!"=="" (
-    echo  [!] Could not retrieve Wi-Fi IP. Ensure device is connected to Wi-Fi.
+    echo  [!] Could not parse IP automatically.
+    echo.
+    set /p DEVICE_IP="     Manually enter the device Wi-Fi IP address: "
+)
+
+if "!DEVICE_IP!"=="" (
+    echo  [!] Wi-Fi IP is required. Aborting.
     pause
     goto NO_DEVICES_MENU
 )
 
 echo  [*] Switching device to TCP/IP mode (Port 5555)...
-adb -s !USB_SERIAL! tcpip 5555 >nul 2>&1
-echo  [*] Waiting for ADB daemon to restart...
-timeout /t 3 >nul
+echo  [DEBUG] adb tcpip Result:
+adb -s !USB_SERIAL! tcpip 5555
+
+echo  [*] Waiting for ADB daemon to re-stabilize...
+set WAIT_COUNT=0
+:WAIT_LOOP
+timeout /t 1 >nul
+set /a WAIT_COUNT+=1
+if !WAIT_COUNT! GEQ 15 (
+    echo  [!] Timeout reached waiting for adbd restart. Continuing...
+    goto WAIT_DONE
+)
+adb -s !USB_SERIAL! shell "echo checking" >nul 2>&1
+if errorlevel 1 goto WAIT_LOOP
+:WAIT_DONE
 
 echo  [*] Connecting to !DEVICE_IP!:5555...
-adb connect !DEVICE_IP!:5555 >nul 2>&1
+echo  [DEBUG] adb connect Result:
+adb connect !DEVICE_IP!:5555
 timeout /t 2 >nul
 
 :: Verify connection exists
 adb devices | findstr "!DEVICE_IP!:5555" | findstr "device" >nul
 if errorlevel 1 (
     echo  [!] Failed to connect wirelessly.
+    echo  [DEBUG] Active Transport Failed
     pause
     goto NO_DEVICES_MENU
 )
@@ -246,12 +290,10 @@ echo  [+] Successfully connected wirelessly!
 echo  [i] You may now unplug the USB cable.
 set "DEVICE_ID=!DEVICE_IP!:5555"
 
-:: Grab Friendly Name and update cache before proceeding
-set "FRIENDLY_NAME="
-for /f "tokens=*" %%x in ('adb -s !DEVICE_ID! shell getprop ro.product.model 2^>nul') do set "FRIENDLY_NAME=%%x"
-if "!FRIENDLY_NAME!"=="" set "FRIENDLY_NAME=Device"
+echo  [DEBUG] Active Transport: !DEVICE_ID!
 echo  [INFO] Auto-connected: !FRIENDLY_NAME! (!USB_SERIAL!)
 
+echo  [DEBUG] Cache Entry: !USB_SERIAL!^|!FRIENDLY_NAME!^|!DEVICE_ID!
 call :UPDATE_CACHE "!DEVICE_ID!" "!USB_SERIAL!"
 timeout /t 4 >nul
 goto MENU_START
