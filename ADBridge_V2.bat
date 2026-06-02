@@ -84,7 +84,7 @@ cd /d "!ADB_PATH!"
 if "%~1"=="--watcher" goto WATCHER_MODE
 if "%~1"=="--auto" (
     set "DEVICE_ID=%~2"
-    echo !DEVICE_ID! | findstr ":" >nul
+    echo !DEVICE_ID! ^| findstr ":" >nul
     if errorlevel 1 (
         set "USB_SERIAL=!DEVICE_ID!"
         goto CONVERT_USB_TO_WIRELESS
@@ -125,7 +125,7 @@ for /f "tokens=1" %%a in ('adb devices ^| findstr /v "List" ^| findstr "device"'
 if "!NUM_DEVICES!"=="0" goto NO_DEVICES_MENU
 
 if "!NUM_DEVICES!"=="1" (
-    echo !ONLY_DEV! | findstr ":" >nul
+    echo !ONLY_DEV! ^| findstr ":" >nul
     if not errorlevel 1 (
         :: Friendly name lookup
         set "FRIENDLY_NAME="
@@ -184,7 +184,7 @@ if not "!TARGET_EP!"=="" (
     echo  [DEBUG] adb connect Output:
     adb connect !TARGET_EP!
     timeout /t 2 >nul
-    adb devices | findstr "!TARGET_EP!" | findstr "device" >nul
+    adb devices ^| findstr "!TARGET_EP!" ^| findstr "device" >nul
     if errorlevel 1 (
         echo  [!] Device not currently connected.
         pause
@@ -281,7 +281,7 @@ for /l %%A in (1, 1, 3) do (
         adb connect !DEVICE_IP!:5555
 
         timeout /t 2 >nul
-        adb devices | findstr "!DEVICE_IP!:5555" | findstr "device" >nul
+        adb devices ^| findstr "!DEVICE_IP!:5555" ^| findstr "device" >nul
         if not errorlevel 1 (
             set "CONN_SUCCESS=1"
         ) else (
@@ -323,9 +323,9 @@ for /f "tokens=1" %%a in ('adb devices ^| findstr /v "List" ^| findstr "device"'
 )
 :: Compare
 for %%D in (!CURR_DEVICES!) do (
-    echo %%D | findstr ":" >nul
+    echo %%D ^| findstr ":" >nul
     if errorlevel 1 (
-        echo !SEEN_DEVICES! | findstr /c:"%%D" >nul
+        echo !SEEN_DEVICES! ^| findstr /c:"%%D" >nul
         if errorlevel 1 (
             :: New device found! Add to seen list permanently for this session.
             set "SEEN_DEVICES=!SEEN_DEVICES! %%D"
@@ -395,7 +395,7 @@ if "!DEV_NEEDS_CONNECT_%SEL_CHOICE%!"=="1" (
     echo  [*] Attempting to connect to !TARGET_DEV!...
     adb connect !TARGET_DEV! >nul 2>&1
     timeout /t 2 >nul
-    adb devices | findstr "!TARGET_DEV!" | findstr "device" >nul
+    adb devices ^| findstr "!TARGET_DEV!" ^| findstr "device" >nul
     if errorlevel 1 (
         echo  [!] Device not currently connected.
         pause
