@@ -19,6 +19,9 @@ setlocal enabledelayedexpansion
 :: set "ADB_PATH=C:\Users\YourName\AppData\Local\Android\Sdk\platform-tools"
 set "ADB_PATH="
 
+:: Set DEBUG_MODE=1 to print diagnostic messages, 0 to hide them.
+set "DEBUG_MODE=1"
+
 :: =========================================================================
 ::   DO NOT EDIT BELOW THIS LINE
 :: =========================================================================
@@ -81,6 +84,12 @@ cd /d "!ADB_PATH!"
 if "%~1"=="--watcher" goto WATCHER_MODE
 if "%~1"=="--auto" (
     set "DEVICE_ID=%~2"
+    echo !DEVICE_ID! ^| findstr ":" >nul
+    if errorlevel 1 (
+        set "USB_SERIAL=!DEVICE_ID!"
+        goto CONVERT_USB_TO_WIRELESS
+    )
+    call :UPDATE_CACHE "!DEVICE_ID!"
     goto MENU_START
 )
 
@@ -96,30 +105,217 @@ echo      LOCAL WI-FI ADB CONTROLLER  ^|  by Nani0p
 echo      github.com/Navdeep0p
 echo =======================================================
 echo.
-echo  [*] Waiting for any device to be connected...
-adb wait-for-device
+if not exist "cache" mkdir cache
+if not exist "cache\devices.txt" type nul > "cache\devices.txt"
 
-:: Extract the first attached device
-set "DEVICE_ID="
+echo  [*] Checking for previously cached devices...
+for /f "tokens=1,2,3 delims=|" %%A in (cache\devices.txt) do (
+    echo  [-] Attempting auto-reconnect to %%C...
+    adb connect %%C >nul 2>&1
+)
+
+:: Count currently connected devices
+set "NUM_DEVICES=0"
+set "ONLY_DEV="
 for /f "tokens=1" %%a in ('adb devices ^| findstr /v "List" ^| findstr "device"') do (
-    if "!DEVICE_ID!"=="" set "DEVICE_ID=%%a"
+    set /a NUM_DEVICES+=1
+    set "ONLY_DEV=%%a"
 )
 
-if "!DEVICE_ID!"=="" (
-    echo  [!] Failed to detect device. Retrying...
+if "!NUM_DEVICES!"=="0" goto NO_DEVICES_MENU
+
+if "!NUM_DEVICES!"=="1" (
+    echo !ONLY_DEV! ^| findstr ":" >nul
+    if not errorlevel 1 (
+        :: Friendly name lookup
+        set "FRIENDLY_NAME="
+        for /f "tokens=*" %%x in ('adb -s !ONLY_DEV! shell getprop ro.product.model 2^>nul') do set "FRIENDLY_NAME=%%x"
+        if "!FRIENDLY_NAME!"=="" set "FRIENDLY_NAME=Device"
+        echo  [+] Auto-connected to cached device:
+        echo      !FRIENDLY_NAME! ^(!ONLY_DEV!^)
+        set "DEVICE_ID=!ONLY_DEV!"
+        call :UPDATE_CACHE "!DEVICE_ID!"
+        timeout /t 2 >nul
+        goto MENU_START
+    ) else (
+        set "USB_SERIAL=!ONLY_DEV!"
+        goto CONVERT_USB_TO_WIRELESS
+    )
+)
+
+:: If multiple connected
+goto SELECT_DEVICE
+
+:: -------------------------------------------------------------------------
+::  NO DEVICES MENU (CACHE FALLBACK)
+:: -------------------------------------------------------------------------
+:NO_DEVICES_MENU
+cls
+echo =======================================================
+echo               DEVICE SELECTION MENU
+echo =======================================================
+echo.
+echo  [!] No connected devices found.
+echo.
+echo   KNOWN CACHED DEVICES:
+set "IDX=0"
+if exist "cache\devices.txt" (
+    for /f "tokens=1,2,3 delims=|" %%a in (cache\devices.txt) do (
+        set /a IDX+=1
+        set "CACHE_EP_!IDX!=%%c"
+        echo   [!IDX!] %%b ^(%%a^) - %%c
+    )
+)
+if "!IDX!"=="0" echo   (No devices in cache)
+
+echo.
+echo   [r] Refresh Connected Devices
+echo   [n] Connect New Device (USB)
+echo   [0] Exit
+echo.
+set /p SEL_CHOICE="Select option: "
+if /i "!SEL_CHOICE!"=="r" goto INITIALIZE
+if /i "!SEL_CHOICE!"=="n" goto CONNECT_NEW_DEVICE
+if /i "!SEL_CHOICE!"=="0" goto EXIT_SCRIPT
+
+set "TARGET_EP=!CACHE_EP_%SEL_CHOICE%!"
+if not "!TARGET_EP!"=="" (
+    echo  [*] Attempting to connect to !TARGET_EP!...
+    echo  [DEBUG] adb connect Output:
+    adb connect !TARGET_EP!
     timeout /t 2 >nul
-    goto INITIALIZE
+    adb devices ^| findstr "!TARGET_EP!" ^| findstr "device" >nul
+    if errorlevel 1 (
+        echo  [!] Device not currently connected.
+        pause
+        goto NO_DEVICES_MENU
+    ) else (
+        set "DEVICE_ID=!TARGET_EP!"
+        call :UPDATE_CACHE "!DEVICE_ID!"
+        goto MENU_START
+    )
 )
 
-echo  [+] Auto-selected device: !DEVICE_ID!
+echo  [!] Invalid selection.
 timeout /t 2 >nul
+goto NO_DEVICES_MENU
+
+:: -------------------------------------------------------------------------
+::  WAIT FOR NEW USB DEVICE
+:: -------------------------------------------------------------------------
+:CONNECT_NEW_DEVICE
+cls
+echo  [*] Waiting for a new device to be connected via USB...
+adb wait-for-device
+goto INITIALIZE
+
+:: -------------------------------------------------------------------------
+::  CONVERT USB TO WIRELESS
+:: -------------------------------------------------------------------------
+:CONVERT_USB_TO_WIRELESS
+echo.
+echo  [+] USB device detected: !USB_SERIAL!
+echo  [DEBUG] Device Serial: !USB_SERIAL!
+
+:: Retrieve Friendly Name using USB serial BEFORE switching to tcpip (since the serial becomes invalid after tcpip restarts adbd)
+set "FRIENDLY_NAME="
+for /f "tokens=*" %%x in ('adb -s !USB_SERIAL! shell getprop ro.product.model 2^>nul') do set "FRIENDLY_NAME=%%x"
+if "!FRIENDLY_NAME!"=="" set "FRIENDLY_NAME=Device"
+echo  [DEBUG] Device Model: !FRIENDLY_NAME!
+
+echo  [*] Retrieving IP address...
+set "RAW_IP="
+set "CLEAN_IP="
+set "DEVICE_IP="
+
+:: Method 1: DHCP properties (most Android versions)
+for /f "tokens=*" %%a in ('adb -s !USB_SERIAL! shell "getprop dhcp.wlan0.ipaddress" 2^>nul') do set "RAW_IP=%%a"
+
+:: Method 2: Live interface state (Android 10+ fallback)
+if "!RAW_IP!"=="" (
+    for /f "tokens=2" %%a in ('adb -s !USB_SERIAL! shell "ip -4 addr show wlan0" ^| findstr "inet " 2^>nul') do set "RAW_IP=%%a"
+)
+
+:: Strip subnet mask
+for /f "tokens=1 delims=/" %%a in ("!RAW_IP!") do set "CLEAN_IP=%%a"
+:: Strip carriage return
+for /f "tokens=1" %%a in ("!CLEAN_IP!") do set "DEVICE_IP=%%a"
+
+echo  [DEBUG] Device IP: !DEVICE_IP!
+
+if "!DEVICE_IP!"=="" (
+    echo  [!] Could not parse IP automatically.
+    echo.
+    set /p DEVICE_IP="     Manually enter the device Wi-Fi IP address: "
+)
+
+if "!DEVICE_IP!"=="" (
+    echo  [!] Wi-Fi IP is required. Aborting.
+    pause
+    goto NO_DEVICES_MENU
+)
+
+echo  [*] Switching device to TCP/IP mode (Port 5555)...
+echo  [DEBUG] adb tcpip Result:
+adb -s !USB_SERIAL! tcpip 5555
+
+echo  [*] Waiting 5 seconds for ADB network daemon to fully initialize...
+timeout /t 5 >nul
+
+echo.
+echo  [!] IMPORTANT: Unplug the USB cable from the device now!
+echo  [i] (HyperOS/MIUI devices block wireless connections while USB is attached)
+echo.
+pause
+
+echo  [DEBUG] Current ADB Devices List:
+adb devices
+
+echo  [*] Attempting to connect to !DEVICE_IP!:5555...
+set "CONN_SUCCESS=0"
+
+for /l %%A in (1, 1, 3) do (
+    if "!CONN_SUCCESS!"=="0" (
+        echo  [-] Connection Attempt %%A of 3...
+        echo  [DEBUG] adb connect Result:
+        adb connect !DEVICE_IP!:5555
+
+        timeout /t 2 >nul
+        adb devices ^| findstr "!DEVICE_IP!:5555" ^| findstr "device" >nul
+        if not errorlevel 1 (
+            set "CONN_SUCCESS=1"
+        ) else (
+            echo  [!] Attempt %%A failed. Waiting 3 seconds before retry...
+            timeout /t 3 >nul
+        )
+    )
+)
+
+if "!CONN_SUCCESS!"=="0" (
+    echo.
+    echo  [!] Critical Failure: Could not establish wireless ADB connection after 3 attempts.
+    echo  [!] Ensure the device is on the exact same Wi-Fi network and AP isolation is off.
+    echo  [DEBUG] Active Transport Failed. (Error 10060 means port 5555 is unreachable).
+    pause
+    goto NO_DEVICES_MENU
+)
+
+echo  [+] Successfully connected wirelessly!
+set "DEVICE_ID=!DEVICE_IP!:5555"
+
+echo  [DEBUG] Active Transport: !DEVICE_ID!
+echo  [INFO] Auto-connected: !FRIENDLY_NAME! (!USB_SERIAL!)
+
+echo  [DEBUG] Cache Entry: !USB_SERIAL!^|!FRIENDLY_NAME!^|!DEVICE_ID!
+call :UPDATE_CACHE "!DEVICE_ID!" "!USB_SERIAL!"
+timeout /t 4 >nul
 goto MENU_START
 
 :: -------------------------------------------------------------------------
 ::  WATCHER MODE (Runs in background)
 :: -------------------------------------------------------------------------
 :WATCHER_MODE
-set "PREV_DEVICES="
+set "SEEN_DEVICES="
 :WATCHER_LOOP
 set "CURR_DEVICES="
 for /f "tokens=1" %%a in ('adb devices ^| findstr /v "List" ^| findstr "device"') do (
@@ -127,13 +323,16 @@ for /f "tokens=1" %%a in ('adb devices ^| findstr /v "List" ^| findstr "device"'
 )
 :: Compare
 for %%D in (!CURR_DEVICES!) do (
-    echo !PREV_DEVICES! | findstr /c:"%%D" >nul
+    echo %%D ^| findstr ":" >nul
     if errorlevel 1 (
-        :: New device found!
-        start "Wireless ADB - Connected: %%D" cmd /c ""%~f0" --auto %%D"
+        echo !SEEN_DEVICES! ^| findstr /c:"%%D" >nul
+        if errorlevel 1 (
+            :: New device found! Add to seen list permanently for this session.
+            set "SEEN_DEVICES=!SEEN_DEVICES! %%D"
+            start "Wireless ADB - Connected: %%D" cmd /c ""%~f0" --auto %%D"
+        )
     )
 )
-set "PREV_DEVICES=!CURR_DEVICES!"
 timeout /t 2 >nul
 goto WATCHER_LOOP
 
@@ -146,32 +345,73 @@ echo =======================================================
 echo            SELECT CONNECTED DEVICE
 echo =======================================================
 echo.
-set idx=0
+echo   CONNECTED DEVICES:
+set "idx=0"
 for /f "tokens=1" %%a in ('adb devices ^| findstr /v "List" ^| findstr "device"') do (
     set /a idx+=1
     set "DEV_!idx!=%%a"
     echo   [!idx!] %%a
 )
 
-if !idx!==0 (
-    echo  [!] No devices connected.
-    pause
-    goto INITIALIZE
+echo.
+echo   KNOWN CACHED DEVICES (Not currently connected):
+set "c_idx=!idx!"
+if exist "cache\devices.txt" (
+    for /f "tokens=1,2,3 delims=|" %%a in (cache\devices.txt) do (
+        :: Ensure it's not already listed
+        set "ALREADY_LISTED=0"
+        for /l %%i in (1,1,!idx!) do (
+            if "!DEV_%%i!"=="%%c" set "ALREADY_LISTED=1"
+        )
+        if "!ALREADY_LISTED!"=="0" (
+            set /a c_idx+=1
+            set "DEV_!c_idx!=%%c"
+            set "DEV_NEEDS_CONNECT_!c_idx!=1"
+            echo   [!c_idx!] %%b ^(%%a^) - %%c
+        )
+    )
 )
 
 echo.
+echo   [r] Refresh
+echo   [n] Connect New Device (USB)
 echo   [b] Back to Main Menu
+echo   [0] Exit
 echo.
-set /p SEL_CHOICE="Select device number: "
+set /p SEL_CHOICE="Select option: "
 if /i "!SEL_CHOICE!"=="b" goto MENU_START
+if /i "!SEL_CHOICE!"=="r" goto INITIALIZE
+if /i "!SEL_CHOICE!"=="n" goto CONNECT_NEW_DEVICE
+if /i "!SEL_CHOICE!"=="0" goto EXIT_SCRIPT
 
-set "DEVICE_ID=!DEV_%SEL_CHOICE%!"
-if "!DEVICE_ID!"=="" (
+set "TARGET_DEV=!DEV_%SEL_CHOICE%!"
+if "!TARGET_DEV!"=="" (
     echo  [!] Invalid selection.
     timeout /t 2 >nul
     goto SELECT_DEVICE
 )
 
+if "!DEV_NEEDS_CONNECT_%SEL_CHOICE%!"=="1" (
+    echo  [*] Attempting to connect to !TARGET_DEV!...
+    adb connect !TARGET_DEV! >nul 2>&1
+    timeout /t 2 >nul
+    adb devices ^| findstr "!TARGET_DEV!" ^| findstr "device" >nul
+    if errorlevel 1 (
+        echo  [!] Device not currently connected.
+        pause
+        goto SELECT_DEVICE
+    )
+)
+
+:: Check if it's USB
+echo !TARGET_DEV! | findstr ":" >nul
+if errorlevel 1 (
+    set "USB_SERIAL=!TARGET_DEV!"
+    goto CONVERT_USB_TO_WIRELESS
+)
+
+set "DEVICE_ID=!TARGET_DEV!"
+call :UPDATE_CACHE "!DEVICE_ID!"
 echo  [+] Switched to device: !DEVICE_ID!
 timeout /t 2 >nul
 goto MENU_START
@@ -191,22 +431,24 @@ echo.
 echo   [1]  Keystroke Injection ^& Remote Control
 echo   [2]  Wireless Screen Mirror (scrcpy)
 echo   [3]  Sideload / Install APK (Ghost Mode)
-echo   [4]  Automated Screenshot Engine
-echo   [5]  Install Shizuku Framework
-echo   [6]  Phone Actions (GPS / Maps / Call / Record / Photo)
-echo   [7]  Connect Another Device
-echo   [8]  Disconnect and Exit
+echo   [4]  Data Pulling
+echo   [5]  Automated Screenshot Engine
+echo   [6]  Install Shizuku Framework
+echo   [7]  Phone Actions (GPS / Maps / Call / Record / Photo)
+echo   [8]  Connect Another Device
+echo   [9]  Disconnect and Exit
 echo.
-set /p CHOICE="Select module (1-8): "
+set /p CHOICE="Select module (1-9): "
 
 if "%CHOICE%"=="1" goto PROJECT_1
 if "%CHOICE%"=="2" goto PROJECT_2
 if "%CHOICE%"=="3" goto INSTALL_APK
-if "%CHOICE%"=="4" goto SS_ENGINE_STANDALONE
-if "%CHOICE%"=="5" goto INJECT_SHIZUKU
-if "%CHOICE%"=="6" goto MODULE_PHONE_ACTIONS
-if "%CHOICE%"=="7" goto SELECT_DEVICE
-if "%CHOICE%"=="8" goto EXIT_SCRIPT
+if "%CHOICE%"=="4" goto DATA_PULLING
+if "%CHOICE%"=="5" goto SS_ENGINE_STANDALONE
+if "%CHOICE%"=="6" goto INJECT_SHIZUKU
+if "%CHOICE%"=="7" goto MODULE_PHONE_ACTIONS
+if "%CHOICE%"=="8" goto SELECT_DEVICE
+if "%CHOICE%"=="9" goto EXIT_SCRIPT
 
 echo  [!] Invalid selection.
 timeout /t 2 >nul
@@ -386,7 +628,125 @@ pause
 goto MENU_START
 
 :: =========================================================================
-::  MODULE 4: STANDALONE SCREENSHOT ENGINE
+::  MODULE 4: DATA PULLING
+:: =========================================================================
+:DATA_PULLING
+cls
+echo =======================================================
+echo               DATA PULLING ENGINE
+echo               Device: %DEVICE_ID%
+echo =======================================================
+echo.
+echo   [1]  Pull Images
+echo   [2]  Pull Videos
+echo   [3]  Pull Documents
+echo   [4]  Pull Downloads
+echo   [5]  Pull WhatsApp Media
+echo   [6]  Pull Screenshots
+echo   [7]  Pull Everything
+echo   [0]  Back
+echo.
+set /p DP_CHOICE="Select module (0-7): "
+
+if "%DP_CHOICE%"=="1" set "PULL_TARGET=Images" & goto PERFORM_PULL
+if "%DP_CHOICE%"=="2" set "PULL_TARGET=Videos" & goto PERFORM_PULL
+if "%DP_CHOICE%"=="3" set "PULL_TARGET=Documents" & goto PERFORM_PULL
+if "%DP_CHOICE%"=="4" set "PULL_TARGET=Downloads" & goto PERFORM_PULL
+if "%DP_CHOICE%"=="5" set "PULL_TARGET=WhatsApp" & goto PERFORM_PULL
+if "%DP_CHOICE%"=="6" set "PULL_TARGET=Screenshots" & goto PERFORM_PULL
+if "%DP_CHOICE%"=="7" set "PULL_TARGET=Everything" & goto PERFORM_PULL
+if "%DP_CHOICE%"=="0" goto MENU_START
+
+echo  [!] Invalid selection.
+timeout /t 2 >nul
+goto DATA_PULLING
+
+:PERFORM_PULL
+echo.
+echo  [*] Pull started...
+set "SUCCESS_COUNT=0"
+set "SKIPPED_COUNT=0"
+
+:: Create local directories
+if not exist "PulledData" mkdir "PulledData"
+if not exist "PulledData\Images" mkdir "PulledData\Images"
+if not exist "PulledData\Videos" mkdir "PulledData\Videos"
+if not exist "PulledData\Documents" mkdir "PulledData\Documents"
+if not exist "PulledData\Downloads" mkdir "PulledData\Downloads"
+if not exist "PulledData\WhatsApp" mkdir "PulledData\WhatsApp"
+if not exist "PulledData\Screenshots" mkdir "PulledData\Screenshots"
+
+if "%PULL_TARGET%"=="Images" goto PULL_IMAGES
+if "%PULL_TARGET%"=="Videos" goto PULL_VIDEOS
+if "%PULL_TARGET%"=="Documents" goto PULL_DOCUMENTS
+if "%PULL_TARGET%"=="Downloads" goto PULL_DOWNLOADS
+if "%PULL_TARGET%"=="WhatsApp" goto PULL_WHATSAPP
+if "%PULL_TARGET%"=="Screenshots" goto PULL_SCREENSHOTS
+if "%PULL_TARGET%"=="Everything" goto PULL_EVERYTHING
+goto DATA_PULLING
+
+:PULL_IMAGES
+if "%DEBUG_MODE%"=="1" echo [DEBUG] Entered PULL_IMAGES
+call :DO_PULL "/sdcard/DCIM" "PulledData\Images"
+call :DO_PULL "/sdcard/Pictures" "PulledData\Images"
+goto PULL_DONE
+
+:PULL_VIDEOS
+if "%DEBUG_MODE%"=="1" echo [DEBUG] Entered PULL_VIDEOS
+call :DO_PULL "/sdcard/DCIM/Camera" "PulledData\Videos"
+call :DO_PULL "/sdcard/Movies" "PulledData\Videos"
+goto PULL_DONE
+
+:PULL_DOCUMENTS
+if "%DEBUG_MODE%"=="1" echo [DEBUG] Entered PULL_DOCUMENTS
+call :DO_PULL "/sdcard/Documents" "PulledData\Documents"
+goto PULL_DONE
+
+:PULL_DOWNLOADS
+if "%DEBUG_MODE%"=="1" echo [DEBUG] Entered PULL_DOWNLOADS
+call :DO_PULL "/sdcard/Download" "PulledData\Downloads"
+goto PULL_DONE
+
+:PULL_WHATSAPP
+if "%DEBUG_MODE%"=="1" echo [DEBUG] Entered PULL_WHATSAPP
+call :DO_PULL "/sdcard/Android/media/com.whatsapp/WhatsApp/Media" "PulledData\WhatsApp"
+goto PULL_DONE
+
+:PULL_SCREENSHOTS
+if "%DEBUG_MODE%"=="1" echo [DEBUG] Entered PULL_SCREENSHOTS
+call :DO_PULL "/sdcard/DCIM/Screenshots" "PulledData\Screenshots"
+call :DO_PULL "/sdcard/Pictures/Screenshots" "PulledData\Screenshots"
+call :DO_PULL "/sdcard/Screenshots" "PulledData\Screenshots"
+goto PULL_DONE
+
+:PULL_EVERYTHING
+if "%DEBUG_MODE%"=="1" echo [DEBUG] Entered PULL_EVERYTHING
+call :DO_PULL "/sdcard/DCIM" "PulledData\Images"
+call :DO_PULL "/sdcard/Pictures" "PulledData\Images"
+call :DO_PULL "/sdcard/DCIM/Camera" "PulledData\Videos"
+call :DO_PULL "/sdcard/Movies" "PulledData\Videos"
+call :DO_PULL "/sdcard/Documents" "PulledData\Documents"
+call :DO_PULL "/sdcard/Download" "PulledData\Downloads"
+call :DO_PULL "/sdcard/Android/media/com.whatsapp/WhatsApp/Media" "PulledData\WhatsApp"
+call :DO_PULL "/sdcard/DCIM/Screenshots" "PulledData\Screenshots"
+call :DO_PULL "/sdcard/Pictures/Screenshots" "PulledData\Screenshots"
+call :DO_PULL "/sdcard/Screenshots" "PulledData\Screenshots"
+goto PULL_DONE
+
+:PULL_DONE
+echo.
+echo  [*] Pull completed.
+echo  [*] Folders copied successfully: %SUCCESS_COUNT%
+if !SKIPPED_COUNT! gtr 0 (
+    echo  [*] Folders skipped ^(not found^): %SKIPPED_COUNT%
+)
+echo.
+if "%DEBUG_MODE%"=="1" echo [DEBUG] Returning to DATA_PULLING menu
+pause
+goto DATA_PULLING
+
+:: =========================================================================
+::  MODULE 5: STANDALONE SCREENSHOT ENGINE
 :: =========================================================================
 :SS_ENGINE_STANDALONE
 cls
@@ -415,7 +775,7 @@ pause
 goto MENU_START
 
 :: =========================================================================
-::  MODULE 5: SHIZUKU FRAMEWORK INSTALLER
+::  MODULE 6: SHIZUKU FRAMEWORK INSTALLER
 :: =========================================================================
 :INJECT_SHIZUKU
 cls
@@ -568,12 +928,12 @@ timeout /t 2 >nul
 goto SS_LOOP
 
 :: =========================================================================
-::  MODULE 6: PHONE ACTIONS — GPS / MAPS / CALL / RECORD / PHOTO
+::  MODULE 7: PHONE ACTIONS — GPS / MAPS / CALL / RECORD / PHOTO
 :: =========================================================================
 :MODULE_PHONE_ACTIONS
 cls
 echo =======================================================
-echo      MODULE 6: PHONE ACTIONS ^& SENSORS
+echo      MODULE 7: PHONE ACTIONS ^& SENSORS
 echo      Device: %DEVICE_ID%
 echo      by Nani0p ^| github.com/Navdeep0p
 echo =======================================================
@@ -732,7 +1092,7 @@ adb -s %DEVICE_ID% shell input keyevent 4
 timeout /t 3 >nul
 echo  [*] Searching for newest audio file on device...
 set "REC_FILE="
-for /f "tokens=*" %%a in ('adb -s %DEVICE_ID% shell "find /sdcard -maxdepth 4 \( -name '*.m4a' -o -name '*.3gp' -o -name '*.aac' -o -name '*.mp3' -o -name '*.wav' \) 2>/dev/null | xargs ls -t 2>/dev/null | head -1"') do set "REC_FILE=%%a"
+for /f "tokens=*" %%a in ('adb -s %DEVICE_ID% shell "find /sdcard -maxdepth 4 \( -name '*.m4a' -o -name '*.3gp' -o -name '*.aac' -o -name '*.mp3' -o -name '*.wav' \) 2^>/dev/null ^| xargs ls -t 2^>/dev/null ^| head -1"') do set "REC_FILE=%%a"
 for /f "tokens=1" %%a in ("!REC_FILE!") do set "REC_FILE=%%a"
 if not "!REC_FILE!"=="" (
     echo  [*] Found: !REC_FILE!
@@ -824,7 +1184,7 @@ adb -s %DEVICE_ID% shell input keyevent 3 >nul 2>&1
 :: -- Locate new photo (timestamp-based, parentheses fix the -o precedence bug) --
 echo  [*] Locating captured photo...
 set "PHO_FILE="
-for /f "tokens=*" %%a in ('adb -s %DEVICE_ID% shell "find /sdcard/DCIM -newer /sdcard/.snap_marker \( -name '*.jpg' -o -name '*.jpeg' \) 2>/dev/null | head -1"') do set "PHO_FILE=%%a"
+for /f "tokens=*" %%a in ('adb -s %DEVICE_ID% shell "find /sdcard/DCIM -newer /sdcard/.snap_marker \( -name '*.jpg' -o -name '*.jpeg' \) 2^>/dev/null ^| head -1"') do set "PHO_FILE=%%a"
 for /f "tokens=1" %%a in ("!PHO_FILE!") do set "PHO_FILE=%%a"
 adb -s %DEVICE_ID% shell "rm /sdcard/.snap_marker" >nul 2>&1
 
@@ -929,7 +1289,7 @@ adb -s %DEVICE_ID% shell input keyevent 3 >nul 2>&1
 :: -- Locate new photo (parentheses fix -o precedence bug) --
 echo  [*] Locating captured selfie...
 set "PHO_FILE="
-for /f "tokens=*" %%a in ('adb -s %DEVICE_ID% shell "find /sdcard/DCIM -newer /sdcard/.snap_marker \( -name '*.jpg' -o -name '*.jpeg' \) 2>/dev/null | head -1"') do set "PHO_FILE=%%a"
+for /f "tokens=*" %%a in ('adb -s %DEVICE_ID% shell "find /sdcard/DCIM -newer /sdcard/.snap_marker \( -name '*.jpg' -o -name '*.jpeg' \) 2^>/dev/null ^| head -1"') do set "PHO_FILE=%%a"
 for /f "tokens=1" %%a in ("!PHO_FILE!") do set "PHO_FILE=%%a"
 adb -s %DEVICE_ID% shell "rm /sdcard/.snap_marker" >nul 2>&1
 
@@ -954,6 +1314,47 @@ if "!SCREEN_WAS_OFF!"=="1" (
 )
 pause
 goto MODULE_PHONE_ACTIONS
+
+:: =========================================================================
+::  HELPER: DO_PULL
+:: =========================================================================
+:DO_PULL
+set "REMOTE_PATH=%~1"
+set "LOCAL_PATH=%~2"
+if "%DEBUG_MODE%"=="1" echo [DEBUG] DO_PULL executing for: %REMOTE_PATH%
+echo  [-] Checking: %REMOTE_PATH%
+adb -s %DEVICE_ID% shell ls "%REMOTE_PATH%" >nul 2>&1
+if errorlevel 1 (
+    echo      [!] Not found. Skipping...
+    set /a SKIPPED_COUNT+=1
+) else (
+    echo      [+] Found. Pulling...
+    adb -s %DEVICE_ID% pull "%REMOTE_PATH%" "%LOCAL_PATH%" >nul 2>&1
+    set /a SUCCESS_COUNT+=1
+)
+exit /b
+
+:: =========================================================================
+::  HELPER: UPDATE_CACHE
+:: =========================================================================
+:UPDATE_CACHE
+set "CACHE_IP=%~1"
+set "CACHE_USB=%~2"
+if "!CACHE_USB!"=="" set "CACHE_USB=!CACHE_IP!"
+
+:: Avoid duplicate entries
+findstr /i "!CACHE_USB!" "cache\devices.txt" >nul
+if not errorlevel 1 goto :EOF
+
+set "FRIENDLY_NAME="
+for /f "tokens=*" %%x in ('adb -s !CACHE_IP! shell getprop ro.product.model 2^>nul') do set "FRIENDLY_NAME=%%x"
+if "!FRIENDLY_NAME!"=="" set "FRIENDLY_NAME=Device"
+
+for /f "tokens=*" %%x in ('date /t') do set "CUR_DATE=%%x"
+for /f "tokens=*" %%x in ('time /t') do set "CUR_TIME=%%x"
+
+echo !CACHE_USB!^|!FRIENDLY_NAME!^|!CACHE_IP!^|!CUR_DATE! !CUR_TIME!>> "cache\devices.txt"
+exit /b
 
 :: =========================================================================
 ::  EXIT
