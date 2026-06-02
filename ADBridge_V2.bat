@@ -19,6 +19,9 @@ setlocal enabledelayedexpansion
 :: set "ADB_PATH=C:\Users\YourName\AppData\Local\Android\Sdk\platform-tools"
 set "ADB_PATH="
 
+:: Set DEBUG_MODE=1 to print diagnostic messages, 0 to hide them.
+set "DEBUG_MODE=0"
+
 :: =========================================================================
 ::   DO NOT EDIT BELOW THIS LINE
 :: =========================================================================
@@ -446,32 +449,41 @@ if "%PULL_TARGET%"=="Everything" goto PULL_EVERYTHING
 goto DATA_PULLING
 
 :PULL_IMAGES
+if "%DEBUG_MODE%"=="1" echo [DEBUG] Entered PULL_IMAGES
 call :DO_PULL "/sdcard/DCIM" "PulledData\Images"
 call :DO_PULL "/sdcard/Pictures" "PulledData\Images"
 goto PULL_DONE
 
 :PULL_VIDEOS
+if "%DEBUG_MODE%"=="1" echo [DEBUG] Entered PULL_VIDEOS
 call :DO_PULL "/sdcard/DCIM/Camera" "PulledData\Videos"
 call :DO_PULL "/sdcard/Movies" "PulledData\Videos"
 goto PULL_DONE
 
 :PULL_DOCUMENTS
+if "%DEBUG_MODE%"=="1" echo [DEBUG] Entered PULL_DOCUMENTS
 call :DO_PULL "/sdcard/Documents" "PulledData\Documents"
 goto PULL_DONE
 
 :PULL_DOWNLOADS
+if "%DEBUG_MODE%"=="1" echo [DEBUG] Entered PULL_DOWNLOADS
 call :DO_PULL "/sdcard/Download" "PulledData\Downloads"
 goto PULL_DONE
 
 :PULL_WHATSAPP
+if "%DEBUG_MODE%"=="1" echo [DEBUG] Entered PULL_WHATSAPP
 call :DO_PULL "/sdcard/Android/media/com.whatsapp/WhatsApp/Media" "PulledData\WhatsApp"
 goto PULL_DONE
 
 :PULL_SCREENSHOTS
+if "%DEBUG_MODE%"=="1" echo [DEBUG] Entered PULL_SCREENSHOTS
+call :DO_PULL "/sdcard/DCIM/Screenshots" "PulledData\Screenshots"
 call :DO_PULL "/sdcard/Pictures/Screenshots" "PulledData\Screenshots"
+call :DO_PULL "/sdcard/Screenshots" "PulledData\Screenshots"
 goto PULL_DONE
 
 :PULL_EVERYTHING
+if "%DEBUG_MODE%"=="1" echo [DEBUG] Entered PULL_EVERYTHING
 call :DO_PULL "/sdcard/DCIM" "PulledData\Images"
 call :DO_PULL "/sdcard/Pictures" "PulledData\Images"
 call :DO_PULL "/sdcard/DCIM/Camera" "PulledData\Videos"
@@ -479,7 +491,9 @@ call :DO_PULL "/sdcard/Movies" "PulledData\Videos"
 call :DO_PULL "/sdcard/Documents" "PulledData\Documents"
 call :DO_PULL "/sdcard/Download" "PulledData\Downloads"
 call :DO_PULL "/sdcard/Android/media/com.whatsapp/WhatsApp/Media" "PulledData\WhatsApp"
+call :DO_PULL "/sdcard/DCIM/Screenshots" "PulledData\Screenshots"
 call :DO_PULL "/sdcard/Pictures/Screenshots" "PulledData\Screenshots"
+call :DO_PULL "/sdcard/Screenshots" "PulledData\Screenshots"
 goto PULL_DONE
 
 :PULL_DONE
@@ -490,6 +504,7 @@ if !SKIPPED_COUNT! gtr 0 (
     echo  [*] Folders skipped (not found): %SKIPPED_COUNT%
 )
 echo.
+if "%DEBUG_MODE%"=="1" echo [DEBUG] Returning to DATA_PULLING menu
 pause
 goto DATA_PULLING
 
@@ -1069,6 +1084,7 @@ goto MODULE_PHONE_ACTIONS
 :DO_PULL
 set "REMOTE_PATH=%~1"
 set "LOCAL_PATH=%~2"
+if "%DEBUG_MODE%"=="1" echo [DEBUG] DO_PULL executing for: %REMOTE_PATH%
 echo  [-] Checking: %REMOTE_PATH%
 adb -s %DEVICE_ID% shell ls "%REMOTE_PATH%" >nul 2>&1
 if errorlevel 1 (
@@ -1079,7 +1095,7 @@ if errorlevel 1 (
     adb -s %DEVICE_ID% pull "%REMOTE_PATH%" "%LOCAL_PATH%" >nul 2>&1
     set /a SUCCESS_COUNT+=1
 )
-goto :EOF
+exit /b
 
 :: =========================================================================
 ::  EXIT
