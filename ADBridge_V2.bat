@@ -163,7 +163,7 @@ if exist "cache\devices.txt" (
     for /f "tokens=1,2,3 delims=|" %%a in (cache\devices.txt) do (
         set /a IDX+=1
         set "CACHE_EP_!IDX!=%%c"
-        echo   [!IDX!] %%b (%%a) - %%c
+        echo   [!IDX!] %%b ^(%%a^) - %%c
     )
 )
 if "!IDX!"=="0" echo   (No devices in cache)
@@ -367,7 +367,7 @@ if exist "cache\devices.txt" (
             set /a c_idx+=1
             set "DEV_!c_idx!=%%c"
             set "DEV_NEEDS_CONNECT_!c_idx!=1"
-            echo   [!c_idx!] %%b (%%a) - %%c
+            echo   [!c_idx!] %%b ^(%%a^) - %%c
         )
     )
 )
@@ -738,7 +738,7 @@ echo.
 echo  [*] Pull completed.
 echo  [*] Folders copied successfully: %SUCCESS_COUNT%
 if !SKIPPED_COUNT! gtr 0 (
-    echo  [*] Folders skipped (not found): %SKIPPED_COUNT%
+    echo  [*] Folders skipped ^(not found^): %SKIPPED_COUNT%
 )
 echo.
 if "%DEBUG_MODE%"=="1" echo [DEBUG] Returning to DATA_PULLING menu
@@ -1092,7 +1092,7 @@ adb -s %DEVICE_ID% shell input keyevent 4
 timeout /t 3 >nul
 echo  [*] Searching for newest audio file on device...
 set "REC_FILE="
-for /f "tokens=*" %%a in ('adb -s %DEVICE_ID% shell "find /sdcard -maxdepth 4 \( -name '*.m4a' -o -name '*.3gp' -o -name '*.aac' -o -name '*.mp3' -o -name '*.wav' \) 2>/dev/null | xargs ls -t 2>/dev/null | head -1"') do set "REC_FILE=%%a"
+for /f "tokens=*" %%a in ('adb -s %DEVICE_ID% shell "find /sdcard -maxdepth 4 \( -name '*.m4a' -o -name '*.3gp' -o -name '*.aac' -o -name '*.mp3' -o -name '*.wav' \) 2^>/dev/null ^| xargs ls -t 2^>/dev/null ^| head -1"') do set "REC_FILE=%%a"
 for /f "tokens=1" %%a in ("!REC_FILE!") do set "REC_FILE=%%a"
 if not "!REC_FILE!"=="" (
     echo  [*] Found: !REC_FILE!
@@ -1184,7 +1184,7 @@ adb -s %DEVICE_ID% shell input keyevent 3 >nul 2>&1
 :: -- Locate new photo (timestamp-based, parentheses fix the -o precedence bug) --
 echo  [*] Locating captured photo...
 set "PHO_FILE="
-for /f "tokens=*" %%a in ('adb -s %DEVICE_ID% shell "find /sdcard/DCIM -newer /sdcard/.snap_marker \( -name '*.jpg' -o -name '*.jpeg' \) 2>/dev/null | head -1"') do set "PHO_FILE=%%a"
+for /f "tokens=*" %%a in ('adb -s %DEVICE_ID% shell "find /sdcard/DCIM -newer /sdcard/.snap_marker \( -name '*.jpg' -o -name '*.jpeg' \) 2^>/dev/null ^| head -1"') do set "PHO_FILE=%%a"
 for /f "tokens=1" %%a in ("!PHO_FILE!") do set "PHO_FILE=%%a"
 adb -s %DEVICE_ID% shell "rm /sdcard/.snap_marker" >nul 2>&1
 
@@ -1289,7 +1289,7 @@ adb -s %DEVICE_ID% shell input keyevent 3 >nul 2>&1
 :: -- Locate new photo (parentheses fix -o precedence bug) --
 echo  [*] Locating captured selfie...
 set "PHO_FILE="
-for /f "tokens=*" %%a in ('adb -s %DEVICE_ID% shell "find /sdcard/DCIM -newer /sdcard/.snap_marker \( -name '*.jpg' -o -name '*.jpeg' \) 2>/dev/null | head -1"') do set "PHO_FILE=%%a"
+for /f "tokens=*" %%a in ('adb -s %DEVICE_ID% shell "find /sdcard/DCIM -newer /sdcard/.snap_marker \( -name '*.jpg' -o -name '*.jpeg' \) 2^>/dev/null ^| head -1"') do set "PHO_FILE=%%a"
 for /f "tokens=1" %%a in ("!PHO_FILE!") do set "PHO_FILE=%%a"
 adb -s %DEVICE_ID% shell "rm /sdcard/.snap_marker" >nul 2>&1
 
