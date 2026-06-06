@@ -125,9 +125,16 @@ for /f "tokens=1" %%a in ('adb devices ^| findstr /v "List" ^| findstr "device"'
 if "!NUM_DEVICES!"=="0" goto NO_DEVICES_MENU
 
 if "!NUM_DEVICES!"=="1" (
-    echo !ONLY_DEV! ^| findstr ":" >nul
-    if not errorlevel 1 (
-        :: Friendly name lookup
+    :: FIX: echo|findstr does not set errorlevel reliably inside an if block.
+    :: Use string substitution to detect colon — if removing ":" changes the string,
+    :: then it contains a colon (wireless IP:port). If unchanged, it is a USB serial.
+    set "DEV_CHECK=!ONLY_DEV!"
+    if "!DEV_CHECK!"=="!DEV_CHECK::=!" (
+        :: No colon found — USB serial, convert to wireless
+        set "USB_SERIAL=!ONLY_DEV!"
+        goto CONVERT_USB_TO_WIRELESS
+    ) else (
+        :: Colon found — wireless IP:port, use directly
         set "FRIENDLY_NAME="
         for /f "tokens=*" %%x in ('adb -s !ONLY_DEV! shell getprop ro.product.model 2^>nul') do set "FRIENDLY_NAME=%%x"
         if "!FRIENDLY_NAME!"=="" set "FRIENDLY_NAME=Device"
@@ -137,9 +144,6 @@ if "!NUM_DEVICES!"=="1" (
         call :UPDATE_CACHE "!DEVICE_ID!"
         timeout /t 2 >nul
         goto MENU_START
-    ) else (
-        set "USB_SERIAL=!ONLY_DEV!"
-        goto CONVERT_USB_TO_WIRELESS
     )
 )
 
@@ -211,13 +215,14 @@ goto INITIALIZE
 
 :: -------------------------------------------------------------------------
 ::  CONVERT USB TO WIRELESS
+::  FIX: DEVICE_ID is ALWAYS set to IP:5555 — never to the USB serial
 :: -------------------------------------------------------------------------
 :CONVERT_USB_TO_WIRELESS
 echo.
 echo  [+] USB device detected: !USB_SERIAL!
 echo  [DEBUG] Device Serial: !USB_SERIAL!
 
-:: Retrieve Friendly Name using USB serial BEFORE switching to tcpip (since the serial becomes invalid after tcpip restarts adbd)
+:: Retrieve Friendly Name BEFORE switching to tcpip
 set "FRIENDLY_NAME="
 for /f "tokens=*" %%x in ('adb -s !USB_SERIAL! shell getprop ro.product.model 2^>nul') do set "FRIENDLY_NAME=%%x"
 if "!FRIENDLY_NAME!"=="" set "FRIENDLY_NAME=Device"
@@ -236,9 +241,8 @@ if "!RAW_IP!"=="" (
     for /f "tokens=2" %%a in ('adb -s !USB_SERIAL! shell "ip -4 addr show wlan0" ^| findstr "inet " 2^>nul') do set "RAW_IP=%%a"
 )
 
-:: Strip subnet mask
+:: Strip subnet mask and carriage return
 for /f "tokens=1 delims=/" %%a in ("!RAW_IP!") do set "CLEAN_IP=%%a"
-:: Strip carriage return
 for /f "tokens=1" %%a in ("!CLEAN_IP!") do set "DEVICE_IP=%%a"
 
 echo  [DEBUG] Device IP: !DEVICE_IP!
@@ -255,13 +259,35 @@ if "!DEVICE_IP!"=="" (
     goto NO_DEVICES_MENU
 )
 
+:: ---- ALWAYS use port 5555 for tcpip ----
+:: Android (especially MIUI/HyperOS) ignores the port argument and restarts adbd
+:: on 5555 regardless. After connecting wirelessly, if a port collision exists
+:: (another device already on IP:5555), we disconnect and skip this device.
+set "PORT_TARGET=5555"
+
 echo  [*] Switching device to TCP/IP mode (Port 5555)...
 echo  [DEBUG] adb tcpip Result:
 adb -s !USB_SERIAL! tcpip 5555
 
-echo  [*] Waiting 5 seconds for ADB network daemon to fully initialize...
-timeout /t 5 >nul
+:: ---- WAIT LOOP: goto-based so errorlevel propagates correctly ----
+:: for /l loops break errorlevel from child commands -- use goto instead.
+:: CORRECT logic: loop while device IS responsive (errorlevel 0 = still on old USB adbd).
+:: Exit the loop when it STOPS responding (errorlevel 1 = adbd restarted in TCP mode).
+:: Cap at 15s in case some devices never drop the USB serial (they transition silently).
+echo  [*] Waiting for device to switch to TCP/IP mode...
+set "WAIT_COUNT=0"
+:TCPIP_WAIT_LOOP
+timeout /t 1 >nul
+set /a WAIT_COUNT+=1
+if !WAIT_COUNT! GEQ 15 (
+    echo  [*] Timeout reached - TCP/IP mode should be active. Continuing...
+    goto TCPIP_WAIT_DONE
+)
+adb -s !USB_SERIAL! shell "echo checking" >nul 2>&1
+if not errorlevel 1 goto TCPIP_WAIT_LOOP
+:TCPIP_WAIT_DONE
 
+echo  [*] TCP/IP mode active.
 echo.
 echo  [!] IMPORTANT: Unplug the USB cable from the device now!
 echo  [i] (HyperOS/MIUI devices block wireless connections while USB is attached)
@@ -271,36 +297,48 @@ pause
 echo  [DEBUG] Current ADB Devices List:
 adb devices
 
+:: ---- Check if another device is already occupying this IP:port ----
+adb devices > "%TEMP%\adb_dev_check.tmp" 2>nul
+findstr "!DEVICE_IP!:5555" "%TEMP%\adb_dev_check.tmp" >nul
+set "ALREADY_EL=!errorlevel!"
+del "%TEMP%\adb_dev_check.tmp" >nul 2>&1
+if "!ALREADY_EL!"=="0" (
+    echo  [*] !DEVICE_IP!:5555 already connected ^(same IP, different session^). Using existing connection.
+    set "DEVICE_ID=!DEVICE_IP!:5555"
+    goto CONN_SUCCESS
+)
+
 echo  [*] Attempting to connect to !DEVICE_IP!:5555...
-set "CONN_SUCCESS=0"
+set "CONN_ATTEMPT=0"
+:CONN_RETRY
+set /a CONN_ATTEMPT+=1
+echo  [-] Connection Attempt !CONN_ATTEMPT! of 5...
+echo  [DEBUG] adb connect Result:
+adb connect !DEVICE_IP!:5555
+timeout /t 2 >nul
 
-for /l %%A in (1, 1, 3) do (
-    if "!CONN_SUCCESS!"=="0" (
-        echo  [-] Connection Attempt %%A of 3...
-        echo  [DEBUG] adb connect Result:
-        adb connect !DEVICE_IP!:5555
+adb devices > "%TEMP%\adb_dev_check.tmp" 2>nul
+findstr "!DEVICE_IP!:5555" "%TEMP%\adb_dev_check.tmp" | findstr "device" >nul
+set "CONN_EL=!errorlevel!"
+del "%TEMP%\adb_dev_check.tmp" >nul 2>&1
+if "!CONN_EL!"=="0" goto CONN_SUCCESS
 
-        timeout /t 2 >nul
-        adb devices ^| findstr "!DEVICE_IP!:5555" ^| findstr "device" >nul
-        if not errorlevel 1 (
-            set "CONN_SUCCESS=1"
-        ) else (
-            echo  [!] Attempt %%A failed. Waiting 3 seconds before retry...
-            timeout /t 3 >nul
-        )
-    )
+if !CONN_ATTEMPT! LSS 5 (
+    echo  [!] Attempt !CONN_ATTEMPT! failed. Waiting 4 seconds before retry...
+    timeout /t 4 >nul
+    goto CONN_RETRY
 )
 
-if "!CONN_SUCCESS!"=="0" (
-    echo.
-    echo  [!] Critical Failure: Could not establish wireless ADB connection after 3 attempts.
-    echo  [!] Ensure the device is on the exact same Wi-Fi network and AP isolation is off.
-    echo  [DEBUG] Active Transport Failed. (Error 10060 means port 5555 is unreachable).
-    pause
-    goto NO_DEVICES_MENU
-)
+echo.
+echo  [!] Critical Failure: Could not establish wireless ADB connection after 5 attempts.
+echo  [!] Ensure the device is on the same Wi-Fi network and AP isolation is off.
+pause
+goto NO_DEVICES_MENU
 
+:CONN_SUCCESS
 echo  [+] Successfully connected wirelessly!
+
+:: DEVICE_ID is always IP:5555 -- Android enforces this regardless of tcpip argument
 set "DEVICE_ID=!DEVICE_IP!:5555"
 
 echo  [DEBUG] Active Transport: !DEVICE_ID!
@@ -322,12 +360,15 @@ for /f "tokens=1" %%a in ('adb devices ^| findstr /v "List" ^| findstr "device"'
     set "CURR_DEVICES=!CURR_DEVICES! %%a"
 )
 :: Compare
+:: FIX: echo|findstr does not set errorlevel reliably in for loops.
+:: Use string substitution for colon detection, and substring search for seen-list.
 for %%D in (!CURR_DEVICES!) do (
-    echo %%D ^| findstr ":" >nul
-    if errorlevel 1 (
-        echo !SEEN_DEVICES! ^| findstr /c:"%%D" >nul
-        if errorlevel 1 (
-            :: New device found! Add to seen list permanently for this session.
+    set "WD_CHECK=%%D"
+    if "!WD_CHECK!"=="!WD_CHECK::=!" (
+        :: No colon = USB serial (not yet wireless) — check if already seen
+        set "WD_SEEN=!SEEN_DEVICES!"
+        if "!WD_SEEN:%%D=!"=="!WD_SEEN!" (
+            :: Not in seen list — new device, launch handler
             set "SEEN_DEVICES=!SEEN_DEVICES! %%D"
             start "Wireless ADB - Connected: %%D" cmd /c ""%~f0" --auto %%D"
         )
@@ -403,13 +444,15 @@ if "!DEV_NEEDS_CONNECT_%SEL_CHOICE%!"=="1" (
     )
 )
 
-:: Check if it's USB
-echo !TARGET_DEV! | findstr ":" >nul
-if errorlevel 1 (
+:: Check if it's USB (no colon = USB serial)
+:: FIX: echo|findstr unreliable — use string substitution instead
+set "DEV_CHECK=!TARGET_DEV!"
+if "!DEV_CHECK!"=="!DEV_CHECK::=!" (
     set "USB_SERIAL=!TARGET_DEV!"
     goto CONVERT_USB_TO_WIRELESS
 )
 
+:: FIX: Only accept IP:port style as DEVICE_ID
 set "DEVICE_ID=!TARGET_DEV!"
 call :UPDATE_CACHE "!DEVICE_ID!"
 echo  [+] Switched to device: !DEVICE_ID!
@@ -417,9 +460,46 @@ timeout /t 2 >nul
 goto MENU_START
 
 :: =========================================================================
+::  VERIFY CONNECTION HELPER — reconnects wirelessly if device dropped
+::  FIX: Called before every major ADB command block
+:: =========================================================================
+:VERIFY_CONNECTION
+:: Check if DEVICE_ID looks like a USB serial (no colon) — refuse to use it
+echo !DEVICE_ID! | findstr ":" >nul
+if errorlevel 1 (
+    echo  [!] DEVICE_ID is a USB serial ^(!DEVICE_ID!^), not a wireless address.
+    echo  [!] Please reconnect via USB to re-pair wirelessly.
+    pause
+    goto INITIALIZE
+)
+:: Ping the device to confirm it's still reachable
+adb -s !DEVICE_ID! shell echo ping >nul 2>&1
+if errorlevel 1 (
+    echo  [*] Device dropped. Attempting reconnect to !DEVICE_ID!...
+    adb connect !DEVICE_ID! >nul 2>&1
+    timeout /t 2 >nul
+    adb -s !DEVICE_ID! shell echo ping >nul 2>&1
+    if errorlevel 1 (
+        echo  [!] Could not reconnect to !DEVICE_ID!.
+        echo  [i] Make sure phone Wi-Fi is on and both devices are on the same network.
+        pause
+        goto NO_DEVICES_MENU
+    )
+    echo  [+] Reconnected to !DEVICE_ID!.
+)
+exit /b 0
+
+:: =========================================================================
 ::  MAIN MENU
 :: =========================================================================
 :MENU_START
+:: FIX: Guard — refuse to proceed if DEVICE_ID is a USB serial
+echo !DEVICE_ID! | findstr ":" >nul
+if errorlevel 1 (
+    echo  [!] No wireless device active. Returning to device selection...
+    timeout /t 2 >nul
+    goto INITIALIZE
+)
 cls
 echo =======================================================
 echo   ACTIVE NODE: %DEVICE_ID% ^| DASHBOARD
@@ -458,6 +538,7 @@ goto MENU_START
 ::  MODULE 1: KEYSTROKE INJECTION / REMOTE CONTROL
 :: =========================================================================
 :PROJECT_1
+call :VERIFY_CONNECTION
 cls
 echo =======================================================
 echo      PROJECT 1: WIRELESS CONTROL TERMINAL
@@ -529,6 +610,7 @@ goto PROJECT_1
 ::  MODULE 2: WIRELESS SCREEN MIRROR (SCRCPY)
 :: =========================================================================
 :PROJECT_2
+call :VERIFY_CONNECTION
 cls
 echo =======================================================
 echo          PROJECT 2: WIRELESS SCRCPY ENGINE
@@ -567,6 +649,7 @@ goto PROJECT_2
 ::  MODULE 3: GHOST APK SIDELOADER
 :: =========================================================================
 :INSTALL_APK
+call :VERIFY_CONNECTION
 cls
 echo =======================================================
 echo            GHOST APK DEPLOYMENT INJECTOR
@@ -631,6 +714,7 @@ goto MENU_START
 ::  MODULE 4: DATA PULLING
 :: =========================================================================
 :DATA_PULLING
+call :VERIFY_CONNECTION
 cls
 echo =======================================================
 echo               DATA PULLING ENGINE
@@ -749,6 +833,7 @@ goto DATA_PULLING
 ::  MODULE 5: STANDALONE SCREENSHOT ENGINE
 :: =========================================================================
 :SS_ENGINE_STANDALONE
+call :VERIFY_CONNECTION
 cls
 echo =======================================================
 echo         AUTOMATED SCREENSHOT INTERVAL ENGINE
@@ -778,6 +863,7 @@ goto MENU_START
 ::  MODULE 6: SHIZUKU FRAMEWORK INSTALLER
 :: =========================================================================
 :INJECT_SHIZUKU
+call :VERIFY_CONNECTION
 cls
 echo =======================================================
 echo          SHIZUKU FRAMEWORK INSTALLER
@@ -813,6 +899,7 @@ goto MENU_START
 ::  SUB-MENU: APP LAUNCHER (with auto scrcpy mirror)
 :: =========================================================================
 :APP_LAUNCHER
+call :VERIFY_CONNECTION
 cls
 echo =======================================================
 echo           WIRELESS APPLICATION LAUNCHER
@@ -873,6 +960,7 @@ if not errorlevel 1 (
     echo  [*] Waking screen...
     adb -s %DEVICE_ID% shell input keyevent 26
     timeout /t 2 >nul
+    :: FIX: reconnect after wake to ensure wireless link is still up
     adb connect %DEVICE_ID% >nul 2>&1
     timeout /t 2 >nul
     adb -s %DEVICE_ID% shell input swipe 540 1600 540 800 300 >nul 2>&1
@@ -931,6 +1019,7 @@ goto SS_LOOP
 ::  MODULE 7: PHONE ACTIONS — GPS / MAPS / CALL / RECORD / PHOTO
 :: =========================================================================
 :MODULE_PHONE_ACTIONS
+call :VERIFY_CONNECTION
 cls
 echo =======================================================
 echo      MODULE 7: PHONE ACTIONS ^& SENSORS
@@ -1120,6 +1209,7 @@ if "!SCREEN_WAS_OFF!"=="1" (
     echo  [*] Screen is off — waking...
     adb -s %DEVICE_ID% shell input keyevent 26
     timeout /t 2 >nul
+    :: FIX: reconnect using DEVICE_ID (IP:port), not the USB serial
     adb connect %DEVICE_ID% >nul 2>&1
     timeout /t 2 >nul
     adb -s %DEVICE_ID% shell input swipe 540 1600 540 800 300 >nul 2>&1
@@ -1225,6 +1315,7 @@ if "!SCREEN_WAS_OFF!"=="1" (
     echo  [*] Screen is off — waking...
     adb -s %DEVICE_ID% shell input keyevent 26
     timeout /t 2 >nul
+    :: FIX: reconnect using DEVICE_ID (IP:port), not the USB serial
     adb connect %DEVICE_ID% >nul 2>&1
     timeout /t 2 >nul
     adb -s %DEVICE_ID% shell input swipe 540 1600 540 800 300 >nul 2>&1
@@ -1336,15 +1427,21 @@ exit /b
 
 :: =========================================================================
 ::  HELPER: UPDATE_CACHE
+::  FIX: Duplicate-check now matches on the WIRELESS endpoint (column 3),
+::       not on the USB serial, so re-pairing correctly updates the record.
 :: =========================================================================
 :UPDATE_CACHE
 set "CACHE_IP=%~1"
 set "CACHE_USB=%~2"
 if "!CACHE_USB!"=="" set "CACHE_USB=!CACHE_IP!"
 
-:: Avoid duplicate entries
-findstr /i "!CACHE_USB!" "cache\devices.txt" >nul
-if not errorlevel 1 goto :EOF
+:: FIX: Check for duplicate on the wireless IP:port (3rd field), not USB serial
+:: This prevents stale USB-serial entries from blocking the wireless entry
+set "CACHE_DUPLICATE=0"
+for /f "tokens=1,2,3 delims=|" %%a in (cache\devices.txt) do (
+    if "%%c"=="!CACHE_IP!" set "CACHE_DUPLICATE=1"
+)
+if "!CACHE_DUPLICATE!"=="1" goto :EOF
 
 set "FRIENDLY_NAME="
 for /f "tokens=*" %%x in ('adb -s !CACHE_IP! shell getprop ro.product.model 2^>nul') do set "FRIENDLY_NAME=%%x"
